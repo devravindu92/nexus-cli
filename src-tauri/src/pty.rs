@@ -44,6 +44,10 @@ struct Runtime {
 #[derive(Default)]
 struct Inner {
     map: Mutex<HashMap<String, Arc<Runtime>>>,
+    /// Output of processes that ended on their own, kept (in memory only)
+    /// until the session is closed or started again, so a command that fails
+    /// at once still shows why.
+    finished: Mutex<HashMap<String, Arc<Mutex<Output>>>>,
     next_run: AtomicU64,
 }
 
@@ -65,6 +69,36 @@ fn size(cols: u16, rows: u16) -> PtySize {
     }
 }
 
+/// The handle used to type into the terminal.
+///
+/// On Unix the library's own writer sends a newline and the EOF character
+/// (Ctrl-D) into the terminal when it is dropped. For a plain local shell
+/// that is harmless, but for an SSH or tmux client it is forwarded to the
+/// far side: closing a pane could press Enter on a half-typed command and
+/// log the remote shell out, ending a session that was meant to survive.
+/// So write through a plain duplicate of the PTY handle, which closes
+/// silently.
+#[cfg(unix)]
+fn input_writer(master: &(dyn MasterPty + Send)) -> Result<Box<dyn Write + Send>, String> {
+    use std::os::fd::BorrowedFd;
+    let raw = master
+        .as_raw_fd()
+        .ok_or("terminal writer error: no PTY handle")?;
+    // SAFETY: `raw` is the master's open descriptor and outlives this call;
+    // it is only borrowed long enough to duplicate it.
+    let owned = unsafe { BorrowedFd::borrow_raw(raw) }
+        .try_clone_to_owned()
+        .map_err(|e| format!("terminal writer error: {e}"))?;
+    Ok(Box::new(std::fs::File::from(owned)))
+}
+
+#[cfg(not(unix))]
+fn input_writer(master: &(dyn MasterPty + Send)) -> Result<Box<dyn Write + Send>, String> {
+    master
+        .take_writer()
+        .map_err(|e| format!("terminal writer error: {e}"))
+}
+
 impl SessionManager {
     pub fn new() -> Self {
         Self::default()
@@ -81,6 +115,7 @@ impl SessionManager {
         if self.is_live(id) {
             return Err("session already has a running process".into());
         }
+        lock(&self.inner.finished).remove(id);
         let pair = native_pty_system()
             .openpty(size(spec.cols, spec.rows))
             .map_err(|e| format!("could not open a terminal (PTY): {e}"))?;
@@ -106,10 +141,7 @@ impl SessionManager {
             .master
             .try_clone_reader()
             .map_err(|e| format!("terminal reader error: {e}"))?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| format!("terminal writer error: {e}"))?;
+        let writer = input_writer(pair.master.as_ref())?;
         let killer = child.clone_killer();
         let pid = child.process_id();
 
@@ -127,6 +159,8 @@ impl SessionManager {
             output: output.clone(),
         });
         lock(&self.inner.map).insert(id.to_string(), runtime);
+
+        let last_output = output.clone();
 
         // Reader: PTY -> replay ring + subscribers.
         std::thread::Builder::new()
@@ -163,6 +197,7 @@ impl SessionManager {
                     match map.get(&id) {
                         Some(rt) if rt.run_id == run_id => {
                             map.remove(&id);
+                            lock(&inner.finished).insert(id.clone(), last_output);
                             true
                         }
                         _ => false,
@@ -232,10 +267,15 @@ impl SessionManager {
     /// Attach a subscriber. It first receives the replay buffer, then live
     /// output, with no gap or duplication. Returns false if not running.
     pub fn subscribe(&self, id: &str, sink: Sink) -> bool {
-        let Some(rt) = self.get(id) else {
-            return false;
+        let output = match self.get(id) {
+            Some(rt) => rt.output.clone(),
+            // Ended on its own: replay what it printed.
+            None => match lock(&self.inner.finished).get(id) {
+                Some(output) => output.clone(),
+                None => return false,
+            },
         };
-        let mut out = lock(&rt.output);
+        let mut out = lock(&output);
         if !out.ring.is_empty() {
             let (a, b) = out.ring.as_slices();
             let mut replay = Vec::with_capacity(a.len() + b.len());
@@ -252,6 +292,7 @@ impl SessionManager {
     /// Terminate the process. Does not invoke `on_exit`.
     pub fn kill(&self, id: &str) {
         let rt = lock(&self.inner.map).remove(id);
+        lock(&self.inner.finished).remove(id);
         if let Some(rt) = rt {
             let _ = lock(&rt.killer).kill();
         }
@@ -312,6 +353,55 @@ mod tests {
         assert!(out.contains("got:hello"), "output was: {out:?}");
         assert_eq!(exit_rx.recv_timeout(Duration::from_secs(10)).unwrap(), Some(7));
         assert!(!mgr.is_live("s1"));
+    }
+
+    #[test]
+    fn output_of_a_finished_process_can_still_be_read() {
+        let mgr = SessionManager::new();
+        let (exit_tx, exit_rx) = mpsc::channel();
+        mgr.spawn(
+            "s1",
+            spec("echo failed-because-of-x; exit 9"),
+            Box::new(move |c| {
+                let _ = exit_tx.send(c);
+            }),
+        )
+        .unwrap();
+        assert_eq!(exit_rx.recv_timeout(Duration::from_secs(10)).unwrap(), Some(9));
+        let (tx, rx) = mpsc::channel();
+        assert!(mgr.subscribe("s1", Box::new(move |b| tx.send(b.to_vec()).is_ok())));
+        assert!(collect_until(&rx, "failed-because-of-x").contains("failed-because-of-x"));
+        // Closing the session drops it.
+        mgr.kill("s1");
+        assert!(!mgr.subscribe("s1", Box::new(|_| true)));
+    }
+
+    /// Closing a session must not type anything into it. (The library's own
+    /// writer sends newline + Ctrl-D on drop, which an SSH or tmux client
+    /// would forward to the far side.)
+    #[test]
+    fn closing_a_session_sends_no_input() {
+        let dir = std::env::temp_dir().join(format!("nexus-pty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let seen = dir.join("seen");
+        let mgr = SessionManager::new();
+        // Ignore the hang-up so the reader outlives the close, and record
+        // every byte that arrives on the terminal after "ready", unbuffered.
+        // The recorder is stopped after a few seconds either way.
+        let script = format!(
+            "trap '' HUP; stty raw -echo; echo ready; (sleep 3; kill -9 $$) & exec dd bs=1 of='{}' 2>/dev/null",
+            seen.display()
+        );
+        mgr.spawn("s1", spec(&script), Box::new(|_| {})).unwrap();
+        let (tx, rx) = mpsc::channel();
+        mgr.subscribe("s1", Box::new(move |b| tx.send(b.to_vec()).is_ok()));
+        collect_until(&rx, "ready");
+        std::thread::sleep(Duration::from_millis(200));
+        mgr.kill("s1");
+        std::thread::sleep(Duration::from_millis(900));
+        let got = std::fs::read(&seen).unwrap_or_default();
+        assert!(got.is_empty(), "the terminal received input on close: {got:?}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

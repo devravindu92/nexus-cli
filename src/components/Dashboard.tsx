@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, Session, SessionUsage, UsageSnapshot } from "../lib/api";
+import { api, HostMetrics, RemoteHost, Session, SessionUsage, UsageSnapshot } from "../lib/api";
+import { hostStatus } from "./Remote";
 import { describeAgent, describeState, kindLabel, timeAgo, useApp } from "../lib/state";
 
 function formatBytes(bytes: number): string {
@@ -47,6 +48,157 @@ function useUsage(): UsageSnapshot | null {
   return usage;
 }
 
+const formatKb = (kb: number) => formatBytes(kb * 1024);
+
+function formatUptime(secs: number): string {
+  const days = Math.floor(secs / 86400);
+  if (days > 0) return `${days} d`;
+  const hours = Math.floor(secs / 3600);
+  return hours > 0 ? `${hours} h` : `${Math.max(1, Math.floor(secs / 60))} min`;
+}
+
+/**
+ * Metrics for each machine, fetched on that machine's own interval and only
+ * while this panel is on screen. A value is never shown without its age.
+ */
+function useHostMetrics(hosts: RemoteHost[], onChecked: () => void) {
+  const [metrics, setMetrics] = useState<Record<string, HostMetrics>>({});
+  const [, setTick] = useState(0);
+  const key = hosts.map((h) => `${h.id}:${h.metricsEnabled}:${h.disabled}:${h.metricsIntervalSecs}`).join("|");
+  useEffect(() => {
+    let cancelled = false;
+    const timers = hosts
+      .filter((h) => h.metricsEnabled && !h.disabled)
+      .map((h) => {
+        const load = () => {
+          if (document.hidden) return;
+          api
+            .hostMetrics(h.id)
+            .then((m) => {
+              if (cancelled) return;
+              setMetrics((prev) => ({ ...prev, [h.id]: m }));
+              onChecked();
+            })
+            .catch(() => {});
+        };
+        load();
+        return setInterval(load, Math.max(10, h.metricsIntervalSecs) * 1000);
+      });
+    // Re-render so "updated … ago" and staleness stay honest between checks.
+    const clock = setInterval(() => setTick((n) => n + 1), 10000);
+    return () => {
+      cancelled = true;
+      timers.forEach(clearInterval);
+      clearInterval(clock);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  return metrics;
+}
+
+function Meter({ label, used, total, text }: { label: string; used: number; total: number; text: string }) {
+  const pct = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0;
+  const level = pct >= 90 ? "high" : pct >= 75 ? "mid" : "";
+  return (
+    <div className="meter" title={`${label}: ${text}`}>
+      <div className="meter-label">
+        <span>{label}</span>
+        <span>
+          {pct}%{level === "high" ? " ⚠" : ""}
+        </span>
+      </div>
+      <div className="meter-track" role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
+        <div className={`meter-fill ${level}`} style={{ width: `${pct}%` }} />
+      </div>
+      <div className="meter-text">{text}</div>
+    </div>
+  );
+}
+
+function HostsPanel({ hosts, sessions }: { hosts: RemoteHost[]; sessions: Session[] }) {
+  const app = useApp();
+  const metrics = useHostMetrics(hosts, app.refreshHosts);
+  return (
+    <section className="panel hosts-panel">
+      <h3>
+        Remote machines
+        <span className="usage-note">Checked over SSH while this page is open</span>
+      </h3>
+      {hosts.map((h) => {
+        const m = metrics[h.id];
+        const st = hostStatus(h);
+        const live = sessions.filter((s) => s.host === h.id && s.state === "running").length;
+        const age = m ? Date.now() - m.collectedAt : 0;
+        const stale = m ? age > Math.max(10, h.metricsIntervalSecs) * 2500 : false;
+        const ok = m?.status === "ok";
+        return (
+          <div key={h.id} className="host-row">
+            <button className="host-id" onClick={() => app.setModal({ kind: "host", host: h })} title="Edit this machine">
+              <span className="row-title">
+                <span className={`st ${m ? (ok ? "st-running" : "st-failed") : st.cls}`}>
+                  {m ? (ok ? "●" : "✕") : st.icon}
+                </span>{" "}
+                {h.name}
+                {h.environment && <span className="tag">{h.environment}</span>}
+              </span>
+              <span className="row-sub">
+                {h.user ? `${h.user}@` : ""}
+                {h.target} · {live} running session{live === 1 ? "" : "s"}
+                {h.hasTmux === true ? " · tmux available" : h.hasTmux === false ? " · no tmux" : ""}
+              </span>
+            </button>
+            <div className="host-metrics">
+              {h.disabled ? (
+                <span className="empty-hint">Disabled</span>
+              ) : !h.metricsEnabled ? (
+                <span className="empty-hint">Metrics turned off for this machine</span>
+              ) : !m ? (
+                <span className="empty-hint">Checking…</span>
+              ) : !ok ? (
+                <span className="host-error">
+                  {m.status === "unreachable" ? "Unreachable" : m.status === "needsInteraction" ? "Metrics unavailable" : "Check failed"}
+                  : {m.error}
+                </span>
+              ) : (
+                <>
+                  {m.load1 != null && m.cpus ? (
+                    <Meter label="CPU load" used={m.load1} total={m.cpus} text={`${m.load1.toFixed(2)} on ${m.cpus} cores (1 min)`} />
+                  ) : (
+                    <div className="meter empty-hint">CPU load unavailable</div>
+                  )}
+                  {m.memTotalKb != null && m.memAvailableKb != null ? (
+                    <Meter label="Memory" used={m.memTotalKb - m.memAvailableKb} total={m.memTotalKb} text={`${formatKb(m.memTotalKb - m.memAvailableKb)} of ${formatKb(m.memTotalKb)}`} />
+                  ) : (
+                    <div className="meter empty-hint">Memory unavailable</div>
+                  )}
+                  {m.diskTotalKb != null && m.diskUsedKb != null ? (
+                    <Meter label="Disk /" used={m.diskUsedKb} total={m.diskTotalKb} text={`${formatKb(m.diskUsedKb)} of ${formatKb(m.diskTotalKb)}`} />
+                  ) : (
+                    <div className="meter empty-hint">Disk unavailable</div>
+                  )}
+                </>
+              )}
+            </div>
+            <div className={`host-age ${stale ? "stale" : ""}`}>
+              {m ? (
+                <>
+                  {stale ? "Stale · " : ""}
+                  updated {timeAgo(m.collectedAt)}
+                  {ok && m.uptimeSecs != null ? ` · up ${formatUptime(m.uptimeSecs)}` : ""}
+                  <br />
+                  via {m.source}
+                </>
+              ) : (
+                ""
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
 export function Dashboard() {
   const app = useApp();
   const usage = useUsage();
@@ -58,6 +210,7 @@ export function Dashboard() {
   const running = app.sessions.filter((s) => s.state === "running");
   const agentsRunning = running.filter((s) => s.kind === "agent");
   const notRunning = app.sessions.filter((s) => s.state !== "running");
+  const remoteRunning = running.filter((s) => s.host !== "local");
   const agentInfo = agentsRunning.map((s) => describeAgent(s, app.agents));
   const wantYou = agentInfo.filter((a) => a?.attention).length;
   const unknown = agentInfo.filter((a) => a?.label === "State unknown").length;
@@ -97,13 +250,24 @@ export function Dashboard() {
                 : "Measuring"
             }
           />
-          <Card label="Remote sessions" value={0} note="Remote hosts are not in this build yet" muted />
+          <Card
+            label="Remote sessions"
+            value={remoteRunning.length}
+            note={
+              app.hosts.length === 0
+                ? "No remote machines registered"
+                : `${app.hosts.length} machine${app.hosts.length === 1 ? "" : "s"} · ${remoteRunning.filter((s) => s.persistence === "tmux").length} in tmux`
+            }
+            muted={app.hosts.length === 0}
+          />
           <Card
             label="Agent sessions"
             value={agentsRunning.length}
             note={agentNote}
           />
         </div>
+
+        {app.hosts.length > 0 && <HostsPanel hosts={app.hosts} sessions={app.sessions} />}
 
         <section className="panel usage-panel">
           <h3>

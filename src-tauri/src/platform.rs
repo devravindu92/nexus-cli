@@ -312,6 +312,7 @@ pub fn detect_agents() -> Vec<AgentProfile> {
                 resolved_path: resolved.map(|p| p.to_string_lossy().into_owned()),
                 can_resume: caps.resume,
                 reports_state: caps.state,
+                custom: false,
             }
         })
         .collect()

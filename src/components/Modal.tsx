@@ -1,5 +1,8 @@
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { useEffect, useState } from "react";
-import { api, Session } from "../lib/api";
+import { api, parseCommandLine, Session } from "../lib/api";
+import { ProjectReview } from "./Project";
+import { HostDialog, RemoteSessionDialog } from "./Remote";
 import { canResume, kindLabel, ModalState, timeAgo, useApp } from "../lib/state";
 import { PastePolicy } from "../lib/terminals";
 import { ThemePref } from "../lib/themes";
@@ -21,7 +24,7 @@ export function Modal({ modal }: { modal: NonNullable<ModalState> }) {
 
   return (
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && close()}>
-      <div className="dialog" role="dialog" aria-modal="true" aria-label={"title" in modal ? modal.title : modal.kind}>
+      <div className={`dialog ${modal.kind === "host" || modal.kind === "settings" ? "wide" : ""}`} role="dialog" aria-modal="true" aria-label={"title" in modal ? modal.title : modal.kind}>
         {modal.kind === "input" && <InputDialog modal={modal} close={close} />}
         {modal.kind === "confirm" && (
           <>
@@ -29,6 +32,18 @@ export function Modal({ modal }: { modal: NonNullable<ModalState> }) {
             <p>{modal.message}</p>
             {modal.detail && <pre className="dialog-detail">{modal.detail}</pre>}
             <div className="dialog-actions">
+              {modal.altLabel && (
+                <button
+                  className="btn danger-text"
+                  onClick={() => {
+                    close();
+                    modal.onAlt?.();
+                  }}
+                >
+                  {modal.altLabel}
+                </button>
+              )}
+              <span className="spacer" />
               <button className="btn" onClick={close}>
                 Cancel
               </button>
@@ -44,6 +59,13 @@ export function Modal({ modal }: { modal: NonNullable<ModalState> }) {
               </button>
             </div>
           </>
+        )}
+        {modal.kind === "host" && <HostDialog initial={modal.host} close={close} />}
+        {modal.kind === "remote-session" && (
+          <RemoteSessionDialog host={modal.host} placement={modal.placement} close={close} />
+        )}
+        {modal.kind === "project" && (
+          <ProjectReview workspace={modal.workspace} status={modal.status} close={close} />
         )}
         {modal.kind === "closed" && <ClosedSessions />}
         {modal.kind === "settings" && <Settings close={close} />}
@@ -179,6 +201,29 @@ function Settings({ close }: { close: () => void }) {
     ["Reopen closed session", k("⌘⇧T", "Ctrl+Shift+R")],
     ["Copy / paste", k("⌘C / ⌘V", "Ctrl+Shift+C / V")],
   ];
+  const scrollback = Number(app.prefs.scrollback) || 5000;
+  const [agentName, setAgentName] = useState("");
+  const [agentCommand, setAgentCommand] = useState("");
+  const exportSettings = async () => {
+    const path = await save({ defaultPath: "nexus-settings.json", title: "Export NEXUS settings" }).catch(() => null);
+    if (!path) return;
+    api
+      .settingsExport(path)
+      .then(() => app.toast(`Settings exported to ${path}`))
+      .catch((err) => app.toast(String(err)));
+  };
+  const importSettings = async () => {
+    const path = await open({ multiple: false, title: "Import NEXUS settings" }).catch(() => null);
+    if (typeof path !== "string") return;
+    api
+      .settingsImport(path)
+      .then((summary) => {
+        app.toast(`${summary} Restart NEXUS to apply imported preferences.`);
+        app.refreshHosts();
+        app.refreshAgents();
+      })
+      .catch((err) => app.toast(String(err)));
+  };
   return (
     <>
       <h2>Settings</h2>
@@ -235,6 +280,109 @@ function Settings({ close }: { close: () => void }) {
           ))}
         </div>
       </div>
+      <div className="setting">
+        <label id="scroll-label" title="Lines of history kept per terminal. Fewer lines use less memory.">
+          Scrollback per terminal
+        </label>
+        <div className="segmented" role="radiogroup" aria-labelledby="scroll-label">
+          {[1000, 5000, 10000, 50000].map((n) => (
+            <button
+              key={n}
+              role="radio"
+              aria-checked={scrollback === n}
+              className={scrollback === n ? "on" : ""}
+              onClick={() => app.setPref("scrollback", String(n))}
+            >
+              {n.toLocaleString()}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="setting">
+        <label id="notify-label" title="Shown only while NEXUS is not the window in front.">
+          Notify when an agent
+        </label>
+        <div className="checks" role="group" aria-labelledby="notify-label">
+          {(
+            [
+              ["notifyPermission", "needs permission"],
+              ["notifyCompleted", "finishes its turn"],
+            ] as [string, string][]
+          ).map(([key, label]) => (
+            <label key={key} className="check inline">
+              <input
+                type="checkbox"
+                checked={app.prefs[key] !== "off"}
+                onChange={(e) => app.setPref(key, e.target.checked ? "on" : "off")}
+              />
+              <span>{label}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <h3>Custom agents</h3>
+      <p className="fine">
+        Launch profiles for other terminal agents. They start like the built-in ones but report no state.
+      </p>
+      {app.agents
+        .filter((a) => a.custom)
+        .map((a) => (
+          <div key={a.id} className="row static">
+            <span className="row-main">
+              <span className="row-title">{a.name}</span>
+              <span className="row-sub">
+                {[a.program, ...a.args].join(" ")}
+                {a.available ? "" : " — not found on PATH"}
+              </span>
+            </span>
+            <button
+              className="icon-btn"
+              aria-label={`Remove ${a.name}`}
+              title="Remove"
+              onClick={() => api.customAgentRemove(a.id).then(app.setAgentList).catch((e) => app.toast(String(e)))}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+      <form
+        className="input-row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const argv = parseCommandLine(agentCommand);
+          if (!agentName.trim() || argv.length === 0) return;
+          api
+            .customAgentSave(agentName.trim(), argv[0], argv.slice(1))
+            .then((list) => {
+              app.setAgentList(list);
+              setAgentName("");
+              setAgentCommand("");
+            })
+            .catch((err) => app.toast(String(err)));
+        }}
+      >
+        <input className="text-input" aria-label="Agent name" placeholder="Name" value={agentName} onChange={(e) => setAgentName(e.target.value)} />
+        <input className="text-input grow" aria-label="Agent command" placeholder="Command, e.g. my-agent --fast" spellCheck={false} autoCapitalize="off" value={agentCommand} onChange={(e) => setAgentCommand(e.target.value)} />
+        <button type="submit" className="btn">
+          Add
+        </button>
+      </form>
+
+      <h3>Move settings between computers</h3>
+      <p className="fine">
+        Preferences, custom agents and remote machine profiles. There are no passwords or keys to leave
+        out, because NEXUS stores none.
+      </p>
+      <div className="input-row">
+        <button className="btn" onClick={exportSettings}>
+          Export…
+        </button>
+        <button className="btn" onClick={importSettings}>
+          Import…
+        </button>
+      </div>
+
       <h3>Keyboard shortcuts</h3>
       <div className="shortcuts">
         {shortcuts.map(([label, keys]) => (

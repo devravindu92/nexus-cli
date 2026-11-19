@@ -47,13 +47,15 @@ function needsPasteConfirm(text: string, bracketed: boolean): boolean {
   return pastePolicy === "always" || !bracketed;
 }
 
+let scrollback = 5000;
+
 function ensure(id: string): Entry {
   let entry = entries.get(id);
   if (entry) return entry;
   const term = new Terminal({
     allowProposedApi: false,
     cursorBlink: true,
-    scrollback: 10000,
+    scrollback,
     fontSize: fontSizeFor(id),
     fontFamily: appearance.fontFamily,
     theme: appearance.theme,
@@ -194,6 +196,12 @@ export const terminals = {
 
   clearFind(id: string) {
     entries.get(id)?.search.clearDecorations();
+  },
+
+  /** Lines kept per terminal. Fewer lines means less memory per session. */
+  setScrollback(lines: number) {
+    scrollback = lines;
+    for (const entry of entries.values()) entry.term.options.scrollback = lines;
   },
 
   setAppearance(next: Appearance) {

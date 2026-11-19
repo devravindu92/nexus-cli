@@ -39,7 +39,13 @@ This is the first slice of Phase 1 (local terminal workspace).
 - Truthful session states: Running, Exited (with code), Recoverable, Restored. Local processes end when the app quits; NEXUS says so and offers to start a new process from the saved settings.
 - Recently closed sessions (searchable) with restore, dashboard, activity feed, command palette, git branch display.
 
-Not built yet: state and resume for agents other than Claude Code, notifications, remote hosts and SSH, project config file and trust flow, multi-window, auto-update, signing/notarisation, web and cloud sync.
+- Remote machines over SSH: register a machine (host or SSH config alias, user, port, key file, jump host, tags), test the connection, and open shells, commands or agents on it from any workspace. NEXUS uses your system `ssh`, so your SSH config, keys, agent and known hosts apply, and passwords are typed into the terminal, never stored.
+- Durable remote sessions: optionally run a remote session inside tmux on the machine, so it keeps running when the connection drops or NEXUS quits, and reattach to it later. Closing asks whether to detach or end it.
+- Remote machine health on the dashboard: CPU load, memory, disk and uptime from a small read-only command over SSH, with the time of the last check, only while the dashboard is open.
+- Project startup sessions: a `.nexus/workspace.json` in the project can define sessions to start. NEXUS shows exactly what would run and starts nothing until you approve; any change to the file needs a new approval.
+- Custom agent launch profiles, desktop notifications when a local agent needs permission or finishes a turn, a scrollback-size setting, and export/import of settings.
+
+Not built yet: Codex and other agents' state and resume (only Claude Code has them), state for agents running on remote machines, port forwarding, multi-window, auto-update, custom keybindings, scrollback persistence, signing/notarisation, and the web app with cloud sync.
 
 ## Shortcuts
 
@@ -53,6 +59,21 @@ Not built yet: state and resume for agents other than Claude Code, notifications
 | Switch tab | ⌘1–9 | Alt+1–9 |
 | Find in scrollback | ⌘F | Ctrl+Shift+F |
 | Reopen closed session | ⌘⇧T | Ctrl+Shift+R |
+
+## Project config
+
+Put this in `.nexus/workspace.json` in a project to define its startup sessions. `kind` is `shell`, `command` or `agent`; `cwd` is relative to the project root. Environment variables and other fields are not supported and make the file invalid.
+
+```json
+{
+  "version": 1,
+  "sessions": [
+    { "name": "Dev server", "kind": "command", "command": ["npm", "run", "dev"], "cwd": "web" },
+    { "name": "Claude", "kind": "agent", "agent": "claude" },
+    { "name": "Shell", "kind": "shell" }
+  ]
+}
+```
 
 ## Develop
 

@@ -4,7 +4,9 @@ mod commands;
 mod db;
 mod models;
 mod platform;
+mod project;
 mod pty;
+mod remote;
 mod usage;
 
 use commands::AppState;
@@ -49,11 +51,53 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<t
         .build()
 }
 
+/// Desktop notification when an agent starts needing the user (FR-067), but
+/// only while NEXUS is not the focused window: otherwise the state label in
+/// the app already says it. Each kind can be turned off in Settings.
+fn notify_attention(
+    handle: &tauri::AppHandle,
+    db: &db::Db,
+    session_id: &str,
+    state: Option<agent::AgentState>,
+) {
+    use tauri_plugin_notification::NotificationExt;
+    let (pref, what) = match state {
+        Some(agent::AgentState::Permission) => ("notifyPermission", "needs your permission"),
+        Some(agent::AgentState::Completed) => ("notifyCompleted", "finished its turn"),
+        _ => return,
+    };
+    let focused = handle
+        .get_webview_window("main")
+        .and_then(|w| w.is_focused().ok())
+        .unwrap_or(false);
+    if focused {
+        return;
+    }
+    let prefs = db.prefs_all().unwrap_or_default();
+    if prefs.get(pref).map(|v| v == "off").unwrap_or(false) {
+        return;
+    }
+    let Ok(session) = db.session_get(session_id) else {
+        return;
+    };
+    let workspace = db
+        .workspace_get(&session.workspace_id)
+        .map(|w| w.name)
+        .unwrap_or_default();
+    let _ = handle
+        .notification()
+        .builder()
+        .title(format!("{} {what}", session.name))
+        .body(format!("In {workspace}"))
+        .show();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
@@ -76,6 +120,9 @@ pub fn run() {
                     }
                     if signal.resumable {
                         changed |= db.session_set_agent_resumable(id).unwrap_or(false);
+                    }
+                    if state_changed {
+                        notify_attention(&handle, &db, id, signal.state);
                     }
                     if changed {
                         if let Ok(session) = db.session_get(id) {
@@ -107,6 +154,20 @@ pub fn run() {
             commands::app_info,
             commands::shells_list,
             commands::agents_list,
+            commands::custom_agent_save,
+            commands::custom_agent_remove,
+            commands::host_list,
+            commands::host_save,
+            commands::host_remove,
+            commands::host_test,
+            commands::host_metrics,
+            commands::host_tmux_sessions,
+            commands::host_disclosure,
+            commands::project_config_get,
+            commands::project_config_start,
+            commands::project_config_untrust,
+            commands::settings_export,
+            commands::settings_import,
             commands::workspace_list,
             commands::workspace_create,
             commands::workspace_update,

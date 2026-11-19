@@ -21,6 +21,8 @@ Linux needs `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev lib
 - `src-tauri/src/pty.rs` — PTYs and child processes; `db.rs` — SQLite and migrations
 - `src-tauri/src/agent.rs` — agent adapters, the `agent-hook` helper, state monitor
 - `src-tauri/src/usage.rs` — memory / CPU per session and for the app
+- `src-tauri/src/remote.rs` — remote machines over the system `ssh`, tmux-backed durable sessions, connection test and metrics
+- `src-tauri/src/project.rs` — `.nexus/workspace.json` parsing, validation and trust status
 - `src-tauri/src/platform.rs` — shell and agent detection, PATH, terminal environment
 - `src/App.tsx` — app state, actions and shortcuts; `src/lib/terminals.ts` — xterm instances; `src/lib/layout.ts` — tab and split model
 
@@ -32,7 +34,11 @@ Linux needs `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev lib
 - No secrets in SQLite, project config, logs or activity. Credentials belong in the OS keychain. The agent hook helper records event names and IDs only, never prompts, tool input or output.
 - Local-first: no account, no network calls, no telemetry.
 - Terminal output is not persisted. The replay buffer in `pty.rs` is in-memory only.
-- Database changes are append-only migrations in `MIGRATIONS` in `db.rs`; never edit an existing entry. The schema is at version 3.
+- Database changes are append-only migrations in `MIGRATIONS` in `db.rs`; never edit an existing entry. The schema is at version 4.
+- Remote machines go through the system `ssh` client only. Never add `StrictHostKeyChecking=no` or any option that weakens host-key checking, never write to `~/.ssh`, and never store or pass a password or passphrase: SSH asks for those in the terminal. Host fields are validated against option injection in `RemoteHost::validate`; keep new fields under the same check.
+- A tmux-backed session is the only kind that may be described as surviving a disconnect, and never as surviving a reboot of the host. "Reattach" must attach only (`Tmux::AttachOnly`); it must not create a session.
+- `.nexus/workspace.json` is untrusted input. Nothing from it runs without the user approving that exact file content; unknown fields are rejected, not ignored.
+- Do not use `MasterPty::take_writer` on Unix. Its writer types newline + Ctrl-D into the terminal when dropped, which an SSH or tmux client forwards to the far side. Use `pty::input_writer`.
 - Do not change the user's own agent configuration. Per-launch flags only (for Claude Code: `--session-id`, `--resume`, `--settings`).
 
 ## Rules from the owner

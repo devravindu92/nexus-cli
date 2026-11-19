@@ -52,6 +52,11 @@ pub struct Session {
     pub agent_session_id: Option<String>,
     /// That conversation has content, so the CLI can be asked to continue it.
     pub agent_resumable: bool,
+    /// "" = the process lives and dies with its connection / this app.
+    /// "tmux" = it runs inside a tmux session on the remote host, which
+    /// outlives the connection (but not a reboot of that host).
+    #[serde(default)]
+    pub persistence: String,
     /// Runtime only: latest state from the agent's own signals
     /// ("working" | "waiting" | "permission" | "completed"). `None` = unknown.
     #[serde(default)]
@@ -85,6 +90,9 @@ pub struct AgentProfile {
     pub can_resume: bool,
     /// The adapter reports working / waiting / permission state.
     pub reports_state: bool,
+    /// Added by the user in Settings (FR-068), not built in.
+    #[serde(default)]
+    pub custom: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

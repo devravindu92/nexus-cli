@@ -22,6 +22,7 @@ portable-pty = "0.9"
 rusqlite = { version = "0.37", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 sysinfo = { version = "0.36.1", default-features = false, features = ["system"] }
+tauri-plugin-notification = "2"
 
 [profile.release]
 codegen-units = 1

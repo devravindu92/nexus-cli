@@ -1,6 +1,7 @@
 //! SQLite persistence: the local source of truth for workspace, session and
 //! layout metadata. Terminal output is never written here.
 use crate::models::*;
+use crate::remote::RemoteHost;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::path::Path;
 use std::sync::Mutex;
@@ -72,9 +73,46 @@ const MIGRATIONS: &[&str] = &[r#"
     // has content yet (resuming an empty one fails).
     "ALTER TABLE session ADD COLUMN agent_session_id TEXT;
      ALTER TABLE session ADD COLUMN agent_resumable INTEGER NOT NULL DEFAULT 0;",
+    // 4: remote hosts, durable (tmux) sessions, custom agent profiles and
+    // project-config trust decisions. No table here holds a secret.
+    r#"
+    ALTER TABLE session ADD COLUMN persistence TEXT NOT NULL DEFAULT '';
+    CREATE TABLE remote_host (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        environment TEXT NOT NULL DEFAULT '',
+        target TEXT NOT NULL,
+        port INTEGER,
+        user TEXT,
+        identity_file TEXT,
+        proxy_jump TEXT,
+        agent_forwarding INTEGER NOT NULL DEFAULT 0,
+        tags TEXT NOT NULL DEFAULT '[]',
+        disabled INTEGER NOT NULL DEFAULT 0,
+        metrics_enabled INTEGER NOT NULL DEFAULT 1,
+        metrics_interval_secs INTEGER NOT NULL DEFAULT 60,
+        has_tmux INTEGER,
+        created_at INTEGER NOT NULL,
+        last_connected_at INTEGER,
+        last_checked_at INTEGER,
+        last_error TEXT
+    );
+    CREATE TABLE agent_profile (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        program TEXT NOT NULL,
+        args TEXT NOT NULL DEFAULT '[]',
+        created_at INTEGER NOT NULL
+    );
+    CREATE TABLE project_trust (
+        workspace_id TEXT PRIMARY KEY REFERENCES workspace(id) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        decided_at INTEGER NOT NULL
+    );
+    "#,
 ];
 
-const SESSION_COLS: &str = "id, workspace_id, name, kind, profile_id, program, args, cwd, accent, host, state, exit_code, restored, created_at, closed_at, font_size, agent_session_id, agent_resumable";
+const SESSION_COLS: &str = "id, workspace_id, name, kind, profile_id, program, args, cwd, accent, host, state, exit_code, restored, created_at, closed_at, font_size, agent_session_id, agent_resumable, persistence";
 
 fn row_to_session(r: &Row) -> rusqlite::Result<Session> {
     let args: String = r.get(6)?;
@@ -97,8 +135,35 @@ fn row_to_session(r: &Row) -> rusqlite::Result<Session> {
         font_size: r.get(15)?,
         agent_session_id: r.get(16)?,
         agent_resumable: r.get::<_, i64>(17)? != 0,
+        persistence: r.get(18)?,
         agent_state: None,
         agent_resumed: false,
+    })
+}
+
+const HOST_COLS: &str = "id, name, environment, target, port, user, identity_file, proxy_jump, agent_forwarding, tags, disabled, metrics_enabled, metrics_interval_secs, has_tmux, created_at, last_connected_at, last_checked_at, last_error";
+
+fn row_to_host(r: &Row) -> rusqlite::Result<RemoteHost> {
+    let tags: String = r.get(9)?;
+    Ok(RemoteHost {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        environment: r.get(2)?,
+        target: r.get(3)?,
+        port: r.get(4)?,
+        user: r.get(5)?,
+        identity_file: r.get(6)?,
+        proxy_jump: r.get(7)?,
+        agent_forwarding: r.get::<_, i64>(8)? != 0,
+        tags: serde_json::from_str(&tags).unwrap_or_default(),
+        disabled: r.get::<_, i64>(10)? != 0,
+        metrics_enabled: r.get::<_, i64>(11)? != 0,
+        metrics_interval_secs: r.get(12)?,
+        has_tmux: r.get::<_, Option<i64>>(13)?.map(|v| v != 0),
+        created_at: r.get(14)?,
+        last_connected_at: r.get(15)?,
+        last_checked_at: r.get(16)?,
+        last_error: r.get(17)?,
     })
 }
 
@@ -274,7 +339,7 @@ impl Db {
     pub fn session_insert(&self, s: &Session) -> DbResult<()> {
         self.lock()
             .execute(
-                &format!("INSERT INTO session ({SESSION_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)"),
+                &format!("INSERT INTO session ({SESSION_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)"),
                 params![
                     s.id,
                     s.workspace_id,
@@ -293,7 +358,8 @@ impl Db {
                     s.closed_at,
                     s.font_size,
                     s.agent_session_id,
-                    s.agent_resumable as i64
+                    s.agent_resumable as i64,
+                    s.persistence
                 ],
             )
             .map_err(e)?;
@@ -446,6 +512,168 @@ impl Db {
         Ok(())
     }
 
+    // ---- remote hosts -----------------------------------------------------
+
+    pub fn host_list(&self) -> DbResult<Vec<RemoteHost>> {
+        let conn = self.lock();
+        let mut stmt = conn
+            .prepare(&format!("SELECT {HOST_COLS} FROM remote_host ORDER BY name COLLATE NOCASE"))
+            .map_err(e)?;
+        let rows = stmt.query_map([], row_to_host).map_err(e)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(e)
+    }
+
+    pub fn host_get(&self, id: &str) -> DbResult<RemoteHost> {
+        self.lock()
+            .query_row(
+                &format!("SELECT {HOST_COLS} FROM remote_host WHERE id = ?1"),
+                [id],
+                row_to_host,
+            )
+            .optional()
+            .map_err(e)?
+            .ok_or_else(|| "That remote machine is no longer registered.".to_string())
+    }
+
+    /// Insert or update the profile fields. Status fields are left alone.
+    pub fn host_save(&self, h: &RemoteHost) -> DbResult<()> {
+        self.lock()
+            .execute(
+                "INSERT INTO remote_host (id, name, environment, target, port, user, identity_file, proxy_jump,
+                    agent_forwarding, tags, disabled, metrics_enabled, metrics_interval_secs, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                 ON CONFLICT(id) DO UPDATE SET name = excluded.name, environment = excluded.environment,
+                    target = excluded.target, port = excluded.port, user = excluded.user,
+                    identity_file = excluded.identity_file, proxy_jump = excluded.proxy_jump,
+                    agent_forwarding = excluded.agent_forwarding, tags = excluded.tags,
+                    disabled = excluded.disabled, metrics_enabled = excluded.metrics_enabled,
+                    metrics_interval_secs = excluded.metrics_interval_secs",
+                params![
+                    h.id,
+                    h.name,
+                    h.environment,
+                    h.target,
+                    h.port,
+                    h.user,
+                    h.identity_file,
+                    h.proxy_jump,
+                    h.agent_forwarding as i64,
+                    serde_json::to_string(&h.tags).map_err(e)?,
+                    h.disabled as i64,
+                    h.metrics_enabled as i64,
+                    h.metrics_interval_secs,
+                    h.created_at
+                ],
+            )
+            .map_err(e)?;
+        Ok(())
+    }
+
+    pub fn host_delete(&self, id: &str) -> DbResult<()> {
+        self.lock()
+            .execute("DELETE FROM remote_host WHERE id = ?1", [id])
+            .map_err(e)?;
+        Ok(())
+    }
+
+    /// Record the outcome of a connection test or metrics check.
+    pub fn host_set_checked(
+        &self,
+        id: &str,
+        at: i64,
+        ok: bool,
+        error: Option<&str>,
+        has_tmux: Option<bool>,
+    ) -> DbResult<()> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE remote_host SET last_checked_at = ?2, last_error = ?3,
+                last_connected_at = CASE WHEN ?4 THEN ?2 ELSE last_connected_at END
+             WHERE id = ?1",
+            params![id, at, error, ok],
+        )
+        .map_err(e)?;
+        if let Some(has_tmux) = has_tmux {
+            conn.execute(
+                "UPDATE remote_host SET has_tmux = ?2 WHERE id = ?1",
+                params![id, has_tmux as i64],
+            )
+            .map_err(e)?;
+        }
+        Ok(())
+    }
+
+    // ---- custom agent profiles -------------------------------------------
+
+    pub fn custom_agents(&self) -> DbResult<Vec<(String, String, String, Vec<String>)>> {
+        let conn = self.lock();
+        let mut stmt = conn
+            .prepare("SELECT id, name, program, args FROM agent_profile ORDER BY created_at")
+            .map_err(e)?;
+        let rows = stmt
+            .query_map([], |r| {
+                let args: String = r.get(3)?;
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    serde_json::from_str(&args).unwrap_or_default(),
+                ))
+            })
+            .map_err(e)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(e)
+    }
+
+    pub fn custom_agent_save(&self, id: &str, name: &str, program: &str, args: &[String]) -> DbResult<()> {
+        self.lock()
+            .execute(
+                "INSERT INTO agent_profile (id, name, program, args, created_at) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(id) DO UPDATE SET name = excluded.name, program = excluded.program, args = excluded.args",
+                params![id, name, program, serde_json::to_string(args).map_err(e)?, now_ms()],
+            )
+            .map_err(e)?;
+        Ok(())
+    }
+
+    pub fn custom_agent_delete(&self, id: &str) -> DbResult<()> {
+        self.lock()
+            .execute("DELETE FROM agent_profile WHERE id = ?1", [id])
+            .map_err(e)?;
+        Ok(())
+    }
+
+    // ---- project config trust --------------------------------------------
+
+    /// The exact config text the user approved for this workspace, if any.
+    pub fn project_trust_get(&self, workspace_id: &str) -> DbResult<Option<String>> {
+        self.lock()
+            .query_row(
+                "SELECT content FROM project_trust WHERE workspace_id = ?1",
+                [workspace_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(e)
+    }
+
+    pub fn project_trust_set(&self, workspace_id: &str, content: &str) -> DbResult<()> {
+        self.lock()
+            .execute(
+                "INSERT INTO project_trust (workspace_id, content, decided_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(workspace_id) DO UPDATE SET content = excluded.content, decided_at = excluded.decided_at",
+                params![workspace_id, content, now_ms()],
+            )
+            .map_err(e)?;
+        Ok(())
+    }
+
+    pub fn project_trust_clear(&self, workspace_id: &str) -> DbResult<()> {
+        self.lock()
+            .execute("DELETE FROM project_trust WHERE workspace_id = ?1", [workspace_id])
+            .map_err(e)?;
+        Ok(())
+    }
+
     // ---- layouts ----------------------------------------------------------
 
     pub fn layout_get(&self, workspace_id: &str) -> DbResult<Option<String>> {
@@ -576,6 +804,7 @@ mod tests {
             font_size: None,
             agent_session_id: None,
             agent_resumable: false,
+            persistence: String::new(),
             agent_state: None,
             agent_resumed: false,
         }

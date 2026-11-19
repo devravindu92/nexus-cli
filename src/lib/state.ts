@@ -4,6 +4,8 @@ import type {
   AgentProfile,
   AppInfo,
   NewSession,
+  ProjectConfigStatus,
+  RemoteHost,
   Session,
   ShellProfile,
   Workspace,
@@ -33,7 +35,13 @@ export type ModalState =
       confirmLabel?: string;
       danger?: boolean;
       onConfirm: () => void;
+      /** A second, different way to proceed (e.g. end vs. detach). */
+      altLabel?: string;
+      onAlt?: () => void;
     }
+  | { kind: "host"; host: RemoteHost | null }
+  | { kind: "remote-session"; host: RemoteHost; placement: Placement }
+  | { kind: "project"; workspace: Workspace; status: ProjectConfigStatus }
   | { kind: "closed" }
   | { kind: "settings" }
   | null;
@@ -55,6 +63,9 @@ export interface AppContext {
   pastePolicy: PastePolicy;
   focusTick: number;
   findFor: string | null;
+  hosts: RemoteHost[];
+  /** Raw preferences, for settings that need no dedicated state. */
+  prefs: Record<string, string>;
 
   setView: (view: string) => void;
   addWorkspace: () => void;
@@ -79,6 +90,14 @@ export interface AppContext {
   setPastePolicy: (policy: PastePolicy) => void;
   setFindFor: (id: string | null) => void;
   refreshAgents: () => void;
+  setPref: (key: string, value: string) => void;
+  setAgentList: (agents: AgentProfile[]) => void;
+  saveHost: (host: RemoteHost) => Promise<RemoteHost>;
+  removeHost: (host: RemoteHost) => void;
+  refreshHosts: () => void;
+  /** Add sessions started by the backend (project config) to the workspace. */
+  adoptSessions: (sessions: Session[]) => void;
+  toast: (text: string) => void;
 }
 
 export const Ctx = createContext<AppContext | null>(null);
@@ -98,6 +117,39 @@ export interface StateInfo {
 
 /** Truthful, text-labelled session state (never colour alone). */
 export function describeState(s: Session): StateInfo {
+  const remote = s.host !== "local";
+  const durable = remote && s.persistence === "tmux";
+  if (durable && s.state === "running")
+    return {
+      label: "Running · tmux",
+      icon: "●",
+      cls: "st-running",
+      detail:
+        "Runs inside tmux on the remote machine. It keeps running if the connection drops or NEXUS quits, but not if that machine restarts.",
+    };
+  if (durable && (s.state === "recoverable" || (s.state === "exited" && s.exitCode === 255)))
+    return {
+      label: "Detached",
+      icon: "⇄",
+      cls: "st-recoverable",
+      detail:
+        "Not connected. The tmux session may still be running on the remote machine; reattach to find out.",
+    };
+  if (remote && s.state === "exited" && s.exitCode === 255)
+    return {
+      label: "Disconnected",
+      icon: "⇄",
+      cls: "st-failed",
+      detail: "The SSH connection failed or dropped. The remote process ended with it.",
+    };
+  if (remote && s.state === "recoverable")
+    return {
+      label: "Recoverable",
+      icon: "◌",
+      cls: "st-recoverable",
+      detail:
+        "The connection closed when NEXUS quit and the remote process ended with it. It can be started again as a new process.",
+    };
   switch (s.state) {
     case "running":
       return s.restored
@@ -167,6 +219,12 @@ export function canResume(s: Session, agents: AgentProfile[]): boolean {
     !!s.agentSessionId &&
     !!agents.find((a) => a.id === s.profileId)?.canResume
   );
+}
+
+/** Where a session runs, for the always-visible local / remote label. */
+export function hostLabel(s: Session, hosts: RemoteHost[]): string {
+  if (s.host === "local") return "Local";
+  return hosts.find((h) => h.id === s.host)?.name ?? "Removed machine";
 }
 
 export function kindLabel(s: Session, agents: AgentProfile[]): string {

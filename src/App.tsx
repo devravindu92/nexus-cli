@@ -13,6 +13,7 @@ import {
   AgentProfile,
   api,
   AppInfo,
+  RemoteHost,
   parseCommandLine,
   Session,
   ShellProfile,
@@ -58,6 +59,8 @@ export default function App() {
   const [findFor, setFindFor] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [systemTick, setSystemTick] = useState(0);
+  const [hosts, setHosts] = useState<RemoteHost[]>([]);
+  const [prefs, setPrefs] = useState<Record<string, string>>({});
 
   const toast = useCallback((text: string) => {
     const id = Date.now() + Math.random();
@@ -92,6 +95,8 @@ export default function App() {
         setSessions(ss);
         setLayouts(next);
         setActivity(acts);
+        setPrefs(prefs);
+        api.hostList().then((v) => !cancelled && setHosts(v)).catch(fail);
         if (prefs.theme === "dark" || prefs.theme === "light" || prefs.theme === "system")
           setThemePrefState(prefs.theme);
         const size = Number(prefs.fontSize);
@@ -114,11 +119,16 @@ export default function App() {
     };
   }, [fail]);
 
+  const earlyChanges = useRef(new Map<string, Session>());
+
   // ---- backend events -----------------------------------------------------
   useEffect(() => {
     const unSession = listen<Session>("session-changed", (e) => {
       const s = e.payload;
-      if (s.state !== "running") terminals.markStopped(s.id);
+      // A change can arrive before the session it belongs to has been added
+      // (a command that exits at once); keep it for whoever adds the session.
+      earlyChanges.current.set(s.id, s);
+      setTimeout(() => earlyChanges.current.delete(s.id), 10000);
       setSessions((prev) => prev.map((p) => (p.id === s.id ? s : p)));
     });
     const unActivity = listen("activity-changed", () => {
@@ -235,8 +245,8 @@ export default function App() {
   );
 
   // Latest state for callbacks that must not be re-created constantly.
-  const latest = useRef({ layouts, sessions, workspaces, view, shells, modal, paletteOpen, findFor });
-  latest.current = { layouts, sessions, workspaces, view, shells, modal, paletteOpen, findFor };
+  const latest = useRef({ layouts, sessions, workspaces, view, shells, modal, paletteOpen, findFor, hosts });
+  latest.current = { layouts, sessions, workspaces, view, shells, modal, paletteOpen, findFor, hosts };
 
   const focusedSessionId = useCallback((): string | null => {
     const { layouts: ls, view: v } = latest.current;
@@ -340,7 +350,7 @@ export default function App() {
           cols: size?.cols,
           rows: size?.rows,
         });
-        setSessions((prev) => [...prev, s]);
+        setSessions((prev) => [...prev, earlyChanges.current.get(s.id) ?? s]);
         setLayout(wsId, (l) =>
           placement !== "tab" && target ? splitPane(l, target, placement, s.id) : addTab(l, s.id),
         );
@@ -374,11 +384,26 @@ export default function App() {
   );
 
   const closeSession = useCallback(
-    async (id: string) => {
+    async (id: string, endRemote?: boolean) => {
       const s = latest.current.sessions.find((x) => x.id === id);
       if (!s) return;
+      // A durable remote session outlives its pane, so closing has to say
+      // which of the two things the user means.
+      if (s.persistence === "tmux" && endRemote === undefined) {
+        const host = latest.current.hosts.find((h) => h.id === s.host)?.name ?? "the remote machine";
+        setModal({
+          kind: "confirm",
+          title: `Close “${s.name}”?`,
+          message: `This session runs inside tmux on ${host}. Detaching leaves it running there; you can find it again under Recently closed. Ending it stops whatever is running in it.`,
+          confirmLabel: "Detach, keep it running",
+          onConfirm: () => closeSessionRef.current(id, false),
+          altLabel: "End remote session",
+          onAlt: () => closeSessionRef.current(id, true),
+        });
+        return;
+      }
       try {
-        await api.sessionClose(id);
+        await api.sessionClose(id, endRemote ?? false);
         terminals.dispose(id);
         setSessions((prev) => prev.filter((x) => x.id !== id));
         setLayout(s.workspaceId, (l) => removeSession(l, id));
@@ -387,13 +412,17 @@ export default function App() {
         fail(err);
       }
     },
-    [bumpFocus, fail, setLayout],
+    [bumpFocus, fail, setLayout, setModal],
   );
+  const closeSessionRef = useRef(closeSession);
+  closeSessionRef.current = closeSession;
 
   const startSession = useCallback(
     async (id: string, resume = false) => {
       const size = terminals.size(id);
       try {
+        // The next run needs its own output subscription.
+        terminals.markStopped(id);
         const s = await api.sessionStart(id, size?.cols, size?.rows, resume);
         setSessions((prev) => prev.map((p) => (p.id === s.id ? s : p)));
         bumpFocus();
@@ -510,6 +539,68 @@ export default function App() {
     });
     return () => terminals.setPasteGuard(pastePolicy, null);
   }, [pastePolicy, setModal]);
+
+  const setPref = useCallback((key: string, value: string) => {
+    setPrefs((p) => ({ ...p, [key]: value }));
+    api.prefSet(key, value).catch(() => {});
+  }, []);
+
+  const scrollbackLines = Number(prefs.scrollback) || 5000;
+  useEffect(() => {
+    terminals.setScrollback(scrollbackLines);
+  }, [scrollbackLines]);
+
+  const refreshHosts = useCallback(() => {
+    api.hostList().then(setHosts).catch(() => {});
+  }, []);
+
+  const saveHost = useCallback(async (host: RemoteHost) => {
+    const saved = await api.hostSave(host);
+    setHosts((prev) =>
+      prev.some((h) => h.id === saved.id)
+        ? prev.map((h) => (h.id === saved.id ? saved : h))
+        : [...prev, saved],
+    );
+    return saved;
+  }, []);
+
+  const removeHost = useCallback(
+    (host: RemoteHost) => {
+      const used = latest.current.sessions.filter((s) => s.host === host.id).length;
+      setModal({
+        kind: "confirm",
+        title: `Remove “${host.name}” from NEXUS?`,
+        message:
+          (used > 0 ? `${used} open session${used === 1 ? "" : "s"} on it will be closed here. ` : "") +
+          "Nothing on the machine itself is changed, and tmux sessions on it keep running.",
+        confirmLabel: "Remove machine",
+        danger: true,
+        onConfirm: async () => {
+          try {
+            const dropped = await api.hostRemove(host.id);
+            const gone = latest.current.sessions.filter((s) => dropped.includes(s.id));
+            gone.forEach((s) => terminals.dispose(s.id));
+            setSessions((prev) => prev.filter((s) => !dropped.includes(s.id)));
+            for (const s of gone) setLayout(s.workspaceId, (l) => removeSession(l, s.id));
+            setHosts((prev) => prev.filter((h) => h.id !== host.id));
+          } catch (err) {
+            fail(err);
+          }
+        },
+      });
+    },
+    [fail, setLayout, setModal],
+  );
+
+  const adoptSessions = useCallback(
+    (added: Session[]) => {
+      if (added.length === 0) return;
+      setSessions((prev) => [...prev, ...added.filter((a) => !prev.some((p) => p.id === a.id))]);
+      for (const s of added) setLayout(s.workspaceId, (l) => addTab(l, s.id));
+      bumpFocus();
+    },
+    [bumpFocus, setLayout],
+  );
 
   const refreshAgents = useCallback(() => {
     api.agents().then(setAgents).catch(fail);
@@ -642,6 +733,8 @@ export default function App() {
     pastePolicy,
     focusTick,
     findFor,
+    hosts,
+    prefs,
     setView,
     addWorkspace,
     updateWorkspace,
@@ -664,6 +757,13 @@ export default function App() {
     setPastePolicy,
     setFindFor,
     refreshAgents,
+    setPref,
+    setAgentList: setAgents,
+    saveHost,
+    removeHost,
+    refreshHosts,
+    adoptSessions,
+    toast,
   };
 
   return (

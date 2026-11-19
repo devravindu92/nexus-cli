@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Workspace } from "../lib/api";
 import { describeAgent, describeState, kindLabel, useApp } from "../lib/state";
 import { ACCENTS } from "../lib/themes";
+import { hostStatus } from "./Remote";
 
 export function Sidebar() {
   const app = useApp();
@@ -176,6 +177,42 @@ export function Sidebar() {
                   );
                 })}
             </div>
+          );
+        })}
+        <div className="section-title">
+          <span>Remote machines</span>
+          <button
+            className="icon-btn"
+            title="Add a remote machine"
+            aria-label="Add a remote machine"
+            onClick={() => app.setModal({ kind: "host", host: null })}
+          >
+            +
+          </button>
+        </div>
+        {app.hosts.length === 0 && <div className="empty-hint">None registered.</div>}
+        {app.hosts.map((h) => {
+          const st = hostStatus(h);
+          const live = app.sessions.filter((s) => s.host === h.id && s.state === "running").length;
+          return (
+            <button
+              key={h.id}
+              className="nav-item host-item"
+              onClick={() => app.setModal({ kind: "host", host: h })}
+              title={`${h.user ? `${h.user}@` : ""}${h.target} · ${st.label}${h.lastError ? `: ${h.lastError}` : ""}`}
+            >
+              <span className={`st ${st.cls}`} aria-hidden>
+                {st.icon}
+              </span>
+              <span className="ws-name">{h.name}</span>
+              {h.environment && <span className="tag">{h.environment}</span>}
+              {live > 0 && (
+                <span className="badge" title={`${live} running`}>
+                  {live}
+                </span>
+              )}
+              <span className="sr-only">{st.label}</span>
+            </button>
           );
         })}
       </nav>

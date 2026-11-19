@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Session, Workspace } from "../lib/api";
 import { emptyLayout, moveTab, PaneNode, sessionsIn, setRatio } from "../lib/layout";
-import { canResume, describeAgent, describeState, kindLabel, Placement, useApp } from "../lib/state";
+import { canResume, describeAgent, describeState, hostLabel, kindLabel, Placement, useApp } from "../lib/state";
+import { ProjectBanner } from "./Project";
 import { terminals } from "../lib/terminals";
 import { ACCENTS } from "../lib/themes";
 
@@ -12,6 +13,9 @@ export function WorkspaceView({ workspace }: { workspace: Workspace }) {
   const byId = new Map(sessions.map((s) => [s.id, s]));
   const activeTab = layout.tabs.find((t) => t.id === layout.activeTab) ?? layout.tabs[0];
   const [newMenu, setNewMenu] = useState(false);
+  const remoteNames = [
+    ...new Set(sessions.filter((s) => s.host !== "local").map((s) => hostLabel(s, app.hosts))),
+  ];
   const dragIndex = useRef<number | null>(null);
 
   const running = sessions.filter((s) => s.state === "running").length;
@@ -34,10 +38,10 @@ export function WorkspaceView({ workspace }: { workspace: Workspace }) {
           )}
           <span
             className="chip host"
-            title="Commands in this workspace run on this computer"
+            title="Where this workspace's sessions run. Each pane also says where it runs."
             data-tauri-drag-region
           >
-            Host: Local
+            {remoteNames.length === 0 ? "Host: Local" : `Hosts: Local + ${remoteNames.join(", ")}`}
           </span>
           {!workspace.pathExists && (
             <>
@@ -142,6 +146,8 @@ export function WorkspaceView({ workspace }: { workspace: Workspace }) {
           <EmptyWorkspace />
         )}
       </div>
+
+      <ProjectBanner workspace={workspace} />
 
       <footer className="statusbar">
         <span>
@@ -249,6 +255,28 @@ function NewSessionMenu({ canSplit, onClose }: { canSplit: boolean; onClose: () 
             {!a.available && <span className="mi-note">not installed</span>}
           </button>
         ))}
+        <div className="menu-label">
+          Remote machines
+          <button className="link" onClick={() => go(() => app.setModal({ kind: "host", host: null }))}>
+            Add…
+          </button>
+        </div>
+        {app.hosts.length === 0 && <div className="menu-note">None registered yet.</div>}
+        {app.hosts.map((h) => (
+          <button
+            key={h.id}
+            role="menuitem"
+            disabled={h.disabled}
+            title={`${h.user ? `${h.user}@` : ""}${h.target}`}
+            onClick={() => go(() => app.setModal({ kind: "remote-session", host: h, placement }))}
+          >
+            <span className="mi-icon" aria-hidden>
+              ⇄
+            </span>
+            {h.name}…
+            <span className="mi-note">{h.disabled ? "disabled" : h.environment || "remote"}</span>
+          </button>
+        ))}
         <div className="menu-sep" />
         <button role="menuitem" onClick={() => go(() => app.runCommandPrompt(placement))}>
           <span className="mi-icon" aria-hidden>
@@ -348,6 +376,8 @@ function TerminalPane({
   const finding = app.findFor === session.id;
   const paneFont = session.fontSize ?? app.fontSize;
   const agent = describeAgent(session, app.agents);
+  const remote = session.host !== "local";
+  const durable = remote && session.persistence === "tmux";
   const resumable = canResume(session, app.agents);
 
   useLayoutEffect(() => {
@@ -367,7 +397,8 @@ function TerminalPane({
   }, [session.id]);
 
   useEffect(() => {
-    if (session.state === "running") terminals.subscribe(session.id);
+    // Also for a process that already ended: its last output is still held.
+    if (session.state === "running" || session.state === "exited") terminals.subscribe(session.id);
   }, [session.id, session.state]);
 
   useEffect(() => {
@@ -396,6 +427,13 @@ function TerminalPane({
         <span className={`kind kind-${session.kind}`}>
           {session.kind === "agent" ? "✦ " : ""}
           {kindLabel(session, app.agents)}
+        </span>
+        <span
+          className={`chip where ${remote ? "remote" : ""}`}
+          title={remote ? "This session runs on a remote machine, not on this computer" : "This session runs on this computer"}
+        >
+          {remote ? "⇄ " : ""}
+          {hostLabel(session, app.hosts)}
         </span>
         {agent && (
           <span className={`st ${agent.cls}`} title={agent.detail}>
@@ -524,7 +562,9 @@ function TerminalPane({
               <div className={`st ${st.cls}`}>
                 {st.icon} {st.label}
               </div>
-              {session.state === "recoverable" ? (
+              {remote ? (
+                <p>{st.detail}</p>
+              ) : session.state === "recoverable" ? (
                 <p>
                   This session’s process ended when NEXUS quit. Local terminals are not kept alive in the
                   background, so it cannot be resumed — but its name, folder and command were saved.
@@ -535,7 +575,9 @@ function TerminalPane({
                 </p>
               )}
               <code className="cmdline">
-                {[session.program.split(/[\\/]/).pop(), ...session.args].join(" ")}
+                {remote
+                  ? `${hostLabel(session, app.hosts)}: ${[session.program || "login shell", ...session.args].join(" ")}${session.cwd ? `  (in ${session.cwd})` : ""}`
+                  : [session.program.split(/[\\/]/).pop(), ...session.args].join(" ")}
               </code>
               {resumable && (
                 <p>
@@ -550,11 +592,17 @@ function TerminalPane({
                     Continue conversation
                   </button>
                 )}
+                {durable && (
+                  <button className="btn primary" onClick={() => app.startSession(session.id, true)}>
+                    Reattach
+                  </button>
+                )}
                 <button
-                  className={`btn ${resumable ? "" : "primary"}`}
+                  className={`btn ${resumable || durable ? "" : "primary"}`}
                   onClick={() => app.startSession(session.id)}
+                  title={durable ? "Attaches if the tmux session still exists, otherwise starts a new one" : undefined}
                 >
-                  {resumable ? "Start fresh" : "Start as new process"}
+                  {resumable ? "Start fresh" : durable ? "Start or attach" : remote ? "Connect again (new process)" : "Start as new process"}
                 </button>
                 <button className="btn" onClick={() => app.closeSession(session.id)}>
                   Close

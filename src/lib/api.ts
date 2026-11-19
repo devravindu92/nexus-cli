@@ -41,6 +41,8 @@ export interface Session {
   agentResumable: boolean;
   /** Latest state from the agent's own signals; null means unknown. */
   agentState: AgentState | null;
+  /** "" = ends with its connection; "tmux" = runs in tmux on the remote host. */
+  persistence: "" | "tmux";
   /** The running process was asked to continue an earlier conversation. */
   agentResumed: boolean;
 }
@@ -64,6 +66,85 @@ export interface AgentProfile {
   resolvedPath: string | null;
   canResume: boolean;
   reportsState: boolean;
+  /** Added by the user in Settings. */
+  custom: boolean;
+}
+
+export interface RemoteHost {
+  id: string;
+  name: string;
+  environment: string;
+  /** Hostname, IP address or SSH config alias. */
+  target: string;
+  port: number | null;
+  user: string | null;
+  identityFile: string | null;
+  proxyJump: string | null;
+  agentForwarding: boolean;
+  tags: string[];
+  disabled: boolean;
+  metricsEnabled: boolean;
+  metricsIntervalSecs: number;
+  hasTmux: boolean | null;
+  createdAt: number;
+  lastConnectedAt: number | null;
+  lastCheckedAt: number | null;
+  lastError: string | null;
+}
+
+export type ProbeStatus =
+  | "ok"
+  | "unreachable"
+  | "needsInteraction"
+  | "hostKeyUnknown"
+  | "hostKeyChanged"
+  | "error";
+
+export interface HostTest {
+  status: ProbeStatus;
+  message: string;
+  os: string | null;
+  hasTmux: boolean | null;
+}
+
+export interface HostMetrics {
+  hostId: string;
+  source: string;
+  collectedAt: number;
+  status: ProbeStatus | null;
+  error: string | null;
+  os: string | null;
+  load1: number | null;
+  cpus: number | null;
+  memTotalKb: number | null;
+  memAvailableKb: number | null;
+  diskTotalKb: number | null;
+  diskUsedKb: number | null;
+  uptimeSecs: number | null;
+}
+
+export interface ProjectSession {
+  name: string;
+  kind: SessionKind;
+  command: string[];
+  agent: string | null;
+  args: string[];
+  cwd: string | null;
+}
+
+export interface ProjectConfig {
+  version: number;
+  description: string | null;
+  sessions: ProjectSession[];
+}
+
+export interface ProjectConfigStatus {
+  exists: boolean;
+  path: string;
+  config: ProjectConfig | null;
+  error: string | null;
+  trusted: boolean;
+  changedSinceTrust: boolean;
 }
 
 export interface ActivityEvent {
@@ -115,6 +196,9 @@ export interface NewSession {
   cwd?: string;
   cols?: number;
   rows?: number;
+  /** A registered remote machine; omitted = this computer. */
+  hostId?: string;
+  persistence?: "tmux";
 }
 
 export const api = {
@@ -149,7 +233,8 @@ export const api = {
       clearFontSize?: boolean;
     },
   ) => invoke<Session>("session_update", { id, ...patch }),
-  sessionClose: (id: string) => invoke<void>("session_close", { id }),
+  sessionClose: (id: string, endRemote = false) =>
+    invoke<void>("session_close", { id, endRemote }),
   sessionForget: (id: string) => invoke<void>("session_forget", { id }),
 
   usageSnapshot: () => invoke<UsageSnapshot>("usage_snapshot"),
@@ -178,7 +263,53 @@ export const api = {
   prefSet: (key: string, value: string) => invoke<void>("pref_set", { key, value }),
 
   activityList: (limit = 30) => invoke<ActivityEvent[]>("activity_list", { limit }),
+
+  customAgentSave: (name: string, program: string, args: string[], id?: string) =>
+    invoke<AgentProfile[]>("custom_agent_save", { id, name, program, args }),
+  customAgentRemove: (id: string) => invoke<AgentProfile[]>("custom_agent_remove", { id }),
+
+  hostList: () => invoke<RemoteHost[]>("host_list"),
+  hostSave: (host: RemoteHost) => invoke<RemoteHost>("host_save", { host }),
+  /** Returns the IDs of local session records that were dropped with it. */
+  hostRemove: (id: string) => invoke<string[]>("host_remove", { id }),
+  hostTest: (host: RemoteHost) => invoke<HostTest>("host_test", { host }),
+  hostMetrics: (id: string) => invoke<HostMetrics>("host_metrics", { id }),
+  hostTmuxSessions: (id: string) => invoke<string[]>("host_tmux_sessions", { id }),
+  hostDisclosure: () => invoke<Record<string, string>>("host_disclosure"),
+
+  projectConfigGet: (workspaceId: string) =>
+    invoke<ProjectConfigStatus>("project_config_get", { workspaceId }),
+  projectConfigStart: (workspaceId: string, approved?: ProjectConfig) =>
+    invoke<Session[]>("project_config_start", { workspaceId, approved }),
+  projectConfigUntrust: (workspaceId: string) =>
+    invoke<void>("project_config_untrust", { workspaceId }),
+
+  settingsExport: (path: string) => invoke<void>("settings_export", { path }),
+  settingsImport: (path: string) => invoke<string>("settings_import", { path }),
 };
+
+export function blankHost(): RemoteHost {
+  return {
+    id: "",
+    name: "",
+    environment: "",
+    target: "",
+    port: null,
+    user: null,
+    identityFile: null,
+    proxyJump: null,
+    agentForwarding: false,
+    tags: [],
+    disabled: false,
+    metricsEnabled: true,
+    metricsIntervalSecs: 60,
+    hasTmux: null,
+    createdAt: 0,
+    lastConnectedAt: null,
+    lastCheckedAt: null,
+    lastError: null,
+  };
+}
 
 /** Split a command line into argv without invoking a shell. */
 export function parseCommandLine(input: string): string[] {

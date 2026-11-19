@@ -364,3 +364,61 @@ button.usage-name:hover .row-title { text-decoration: underline; }
 @media (prefers-reduced-motion: no-preference) {
   .btn, .nav-item, .tab, .icon-btn { transition: background-color 0.08s, border-color 0.08s; }
 }
+
+/* ---- forms, remote machines, project config ---- */
+.dialog.wide { width: 620px; }
+.form p { margin-bottom: 12px; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; margin: 12px 0; }
+.form-grid label { display: block; font-size: 12px; color: var(--muted); }
+.form-grid label > .text-input, .form-grid label > .input-row { margin-top: 4px; }
+.form-grid label > .input-row .text-input { margin-top: 0; }
+.form-grid .wide { grid-column: 1 / -1; }
+.opt { color: var(--faint); font-weight: 400; }
+.input-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+.input-row .text-input { flex: 1; min-width: 0; }
+.input-row .text-input.grow { flex: 2; }
+.text-input.tiny { width: 56px; height: 22px; padding: 0 6px; display: inline-block; }
+select.text-input { appearance: auto; }
+.check { display: flex; align-items: flex-start; gap: 8px; margin: 10px 0; color: var(--text); }
+.check input { margin-top: 3px; accent-color: var(--brand); }
+.check small { display: block; color: var(--muted); font-size: 11.5px; margin-top: 2px; line-height: 1.45; }
+.check.inline { margin: 0; align-items: center; }
+.check.inline input { margin-top: 0; }
+.checks { display: flex; gap: 14px; flex-wrap: wrap; }
+.callout { margin: 10px 0; padding: 9px 11px; border-radius: 7px; border: 1px solid var(--border-strong); background: var(--bg); user-select: text; -webkit-user-select: text; }
+.callout.ok { border-color: var(--ok); }
+.callout.warn { border-color: var(--warn); }
+.callout.bad { border-color: var(--bad); }
+.callout div { color: var(--muted); margin-top: 3px; }
+.disclosure { margin: 10px 0; color: var(--muted); font-size: 12px; }
+.disclosure summary { cursor: pointer; color: var(--brand); }
+.disclosure p { margin: 8px 0 4px; }
+.dialog-detail { white-space: pre-wrap; word-break: break-word; font: 11.5px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; margin: 4px 0; max-height: 180px; overflow: auto; user-select: text; -webkit-user-select: text; }
+.btn.danger-text { color: var(--bad); }
+.dialog-actions { align-items: center; }
+.host-item .tag { margin-left: auto; }
+.host-item .badge { margin-left: 4px; }
+.chip.where { border-color: var(--border); }
+.chip.where.remote { color: var(--warn); border-color: var(--warn); font-weight: 600; }
+.banner { display: flex; align-items: center; gap: 10px; padding: 6px 10px 6px 14px; border-top: 1px solid var(--border); background: var(--panel); color: var(--muted); font-size: 12px; flex: none; }
+.banner > span:first-child { flex: 1; min-width: 0; }
+.banner.warn { color: var(--warn); }
+.review-list { margin: 10px 0; display: flex; flex-direction: column; gap: 10px; max-height: 44vh; overflow-y: auto; }
+.review-row { border: 1px solid var(--border); border-radius: 7px; padding: 9px 10px; }
+.hosts-panel { margin-top: 12px; }
+.host-row { display: grid; grid-template-columns: minmax(180px, 1.1fr) 3fr minmax(120px, auto); gap: 14px; align-items: center; padding: 8px; border-top: 1px solid var(--border); }
+.host-row:first-of-type { border-top: 0; }
+.host-id { display: flex; flex-direction: column; text-align: left; min-width: 0; border-radius: 6px; padding: 4px; }
+.host-id:hover { background: var(--hover); }
+.host-id .tag { margin-left: 6px; }
+.host-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; align-items: center; min-width: 0; }
+.host-error { grid-column: 1 / -1; color: var(--bad); font-size: 12px; user-select: text; -webkit-user-select: text; }
+.host-age { color: var(--faint); font-size: 11px; text-align: right; line-height: 1.4; }
+.host-age.stale { color: var(--warn); }
+.meter-label { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--muted); }
+.meter-track { height: 5px; border-radius: 3px; background: var(--hover); margin: 4px 0 3px; overflow: hidden; }
+.meter-fill { height: 100%; border-radius: 3px; background: var(--ok); }
+.meter-fill.mid { background: var(--warn); }
+.meter-fill.high { background: var(--bad); }
+.meter-text { font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 1000px) { .host-row { grid-template-columns: 1fr; } .host-age { text-align: left; } }
