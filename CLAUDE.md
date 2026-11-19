@@ -3,7 +3,7 @@
 Local-first desktop terminal workspace for shells and AI coding agents. Tauri 2 + Rust core + React/TypeScript UI + xterm.js. NEXUS is a codename.
 
 - Product spec: `docs/PRD.md` (requirement IDs like FR-044 refer to it)
-- Current status, verified/unverified areas and next steps: `docs/HANDOFF.md` — read it before starting work, and update it when you finish a chunk.
+- Current status, what is and isn't verified, architecture notes and next steps: `docs/HANDOFF.md`. Read it before starting work and update it when you finish a chunk.
 
 ## Commands
 
@@ -11,19 +11,43 @@ Local-first desktop terminal workspace for shells and AI coding agents. Tauri 2 
 - `npm run tauri dev` — run the app with hot reload
 - `npm run build` — type-check and build the frontend (must pass before committing)
 - `cd src-tauri && cargo test` — Rust unit tests (must pass before committing)
-- `npm run tauri build` — release bundle for the current OS
+- `npm run tauri build` — release bundle for the current OS (`-- --bundles app` for just the macOS `.app`)
+
+Linux needs `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf`. With no display, run the app under Xvfb.
+
+## Where things live
+
+- `src-tauri/src/commands.rs` — every command the UI may call
+- `src-tauri/src/pty.rs` — PTYs and child processes; `db.rs` — SQLite and migrations
+- `src-tauri/src/agent.rs` — agent adapters, the `agent-hook` helper, state monitor
+- `src-tauri/src/usage.rs` — memory / CPU per session and for the app
+- `src-tauri/src/platform.rs` — shell and agent detection, PATH, terminal environment
+- `src/App.tsx` — app state, actions and shortcuts; `src/lib/terminals.ts` — xterm instances; `src/lib/layout.ts` — tab and split model
 
 ## Rules that come from the spec
 
-- Never claim process persistence. A local PTY dies with the app. Workspace restoration, terminal restoration, process reattachment and agent continuation are four different things with different labels (PRD 3.3).
-- Session state must be truthful and text-labelled, never colour alone. If an agent's state can't be known from a reliable signal, show `Unknown`; do not guess from terminal text.
+- Never claim process persistence. A local PTY dies with the app. Workspace restoration, terminal restoration, process reattachment and agent continuation are four different things with different labels (PRD 3.3). "Continue conversation" is agent continuation in a new process.
+- Session state must be truthful and text-labelled, never colour alone. Agent state comes only from the agent CLI's own documented signals (hooks, structured output). Never infer it from terminal text; with no reliable signal, show "State unknown".
 - The webview never gets general process execution. Everything goes through the typed commands in `src-tauri/src/commands.rs`. Launch with argument arrays, never concatenated shell strings.
-- No secrets in SQLite, project config, logs or activity. Credentials belong in the OS keychain.
+- No secrets in SQLite, project config, logs or activity. Credentials belong in the OS keychain. The agent hook helper records event names and IDs only, never prompts, tool input or output.
 - Local-first: no account, no network calls, no telemetry.
 - Terminal output is not persisted. The replay buffer in `pty.rs` is in-memory only.
-- Database changes are append-only migrations in `MIGRATIONS` in `db.rs`; never edit an existing entry.
+- Database changes are append-only migrations in `MIGRATIONS` in `db.rs`; never edit an existing entry. The schema is at version 3.
+- Do not change the user's own agent configuration. Per-launch flags only (for Claude Code: `--session-id`, `--resume`, `--settings`).
+
+## Rules from the owner
+
+- Memory use matters. Do not add background polling or per-session caches without a reason; sample on demand (the resource view only runs while the dashboard is visible). Measure before and after anything that could change the footprint and record it in `docs/HANDOFF.md`.
+- Add a dependency only when it earns its place, and say why in the commit.
+
+## Working method
+
+- Verify behaviour before calling something done: run the app or the real CLI, not just the compiler. When that is impossible in the current environment (no macOS, no display, agent CLI not signed in), say so in `docs/HANDOFF.md` under what is unchecked.
+- Do not wire an agent integration from documentation alone. Spike it against the real CLI first, as was done for Claude Code; Codex is still launch-only for that reason.
+- Keep `README.md` ("What works today", shortcuts) in step with the code.
 
 ## Git and releases
 
-- Develop on branch `claude/pensive-franklin-fbguni` unless told otherwise.
-- Every push that touches non-Markdown files runs `.github/workflows/build.yml`, which builds macOS/Linux/Windows installers and publishes a pre-release tagged `build-<run number>`.
+- Develop on branch `claude/pensive-franklin-fbguni` unless told otherwise. Commit and push when a chunk of work is done.
+- Every push that touches non-Markdown files runs `.github/workflows/build.yml`, which builds macOS/Linux/Windows installers and publishes a pre-release tagged `build-<run number>`. A Markdown-only push builds nothing.
+- macOS builds are unsigned: they must be copied to Applications and cleared with `xattr -cr /Applications/NEXUS.app`, or macOS kills them at launch.

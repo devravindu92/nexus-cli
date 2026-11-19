@@ -1,13 +1,29 @@
 # NEXUS handoff
 
-State of the project as of 19 November 2026, written so a new session can continue without the earlier conversation.
+State of the project as of 19 November 2026 (after the local macOS session), written so a new session can continue without the earlier conversation. `CLAUDE.md` has the short rules; this file has the detail.
 
 ## Where things are
 
 - Repo: `devravindu92/nexus-cli`, branch `claude/pensive-franklin-fbguni` (the only branch; there is no `main` yet).
-- Latest installers: release `build-1` — https://github.com/devravindu92/nexus-cli/releases/tag/build-1
-- The macOS build is unsigned and not notarised. After installing, run `xattr -cr /Applications/NEXUS.app` once.
-- Spec: `docs/PRD.md`. What exists is the first slice of "Phase 1 — P0 desktop terminal workspace" (PRD section 14).
+- Last code commit: `9525a5f` (resource use on the dashboard, agent resume fix). Every push that touches non-Markdown files builds installers and publishes a pre-release `build-N`; `build-3` comes from that commit. List them with `gh release list`.
+- The macOS build is unsigned and not notarised. It must be copied to Applications and cleared with `xattr -cr /Applications/NEXUS.app`, otherwise macOS kills it at launch.
+- Spec: `docs/PRD.md`. What exists: PRD Phase 1 (local terminal workspace) apart from the items under "Requirement coverage", the Claude Code part of Phase 2 (agent awareness), and a resource-use view the owner asked for.
+
+## What the owner cares about
+
+Said during the macOS session, in addition to the PRD:
+
+- **Low memory use.** NEXUS itself should stay light, and the user must be able to see what every terminal costs and close the ones they don't need. The dashboard's Resource use panel is the first version; see "Memory baseline" for the current numbers and where to cut.
+- They install the release builds to try them, so a broken or confusing first launch matters (see the quarantine note above).
+
+## Continuing in a cloud (Linux) session
+
+- Linux build prerequisites are the ones CI installs: `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf`, plus Node 22+ and Rust stable.
+- There is no display. The earlier cloud session ran the real app under Xvfb and drove it by keyboard; that works for anything that does not need a person's eyes.
+- Verifiable there: `cargo test`, `npm run build`, the app under Xvfb, and everything in `agent.rs`, `usage.rs`, `db.rs`, `pty.rs` through unit tests. `usage.rs` uses `sysinfo`, which works on Linux; on Linux the web view runs as child processes of the app, so "NEXUS itself" includes it without the macOS-only call.
+- Not verifiable there: anything macOS- or Windows-specific (window chrome, menus, Finder launch, signing, ConPTY). Write it, say clearly in this file that it is unchecked, and leave it for a local session.
+- Agent work needs the real CLI. If `claude` is installed and signed in, the spike commands under "Agent awareness check" can be repeated (each run spends a little of the account's usage). If it is not, stay within what the unit tests cover and do not change the hook mapping from documentation alone.
+- A NEXUS started from inside a Claude Code session inherits that session's environment. Terminals strip it (`platform::terminal_env_remove`), but keep it in mind when something behaves differently "inside Claude Code" than from a normal launch.
 
 ## What has and hasn't been verified
 
@@ -30,13 +46,16 @@ Verified on macOS 26.3 (Apple Silicon) on 19 November 2026, by driving the dev b
 - Native folder picker (opens as a sheet) for adding a workspace and for relinking one
 - Agent and shell detection; Claude Code and Codex both start and stay running, including when the app is started with a Finder-style minimal environment (`env -i`, `PATH=/usr/bin:/bin:/usr/sbin:/sbin`), which exercises `platform.rs::login_shell_path`
 - Restart recovery (sessions come back as Recoverable, tab order kept), "Start as new process", tab drag-to-reorder
-- The `build-1` release `.dmg`: the app is killed at launch (exit 137) while the quarantine flag is set, and runs normally once it is cleared with `xattr -cr`. Nothing in the code is wrong; it needs signing and notarisation (step 6 below)
+- The `build-1` release `.dmg`: the app is killed at launch (exit 137) while the quarantine flag is set, and runs normally once it is cleared with `xattr -cr`. Nothing in the code is wrong; it needs signing and notarisation (last step below)
+
+- A release bundle opened with `open NEXUS.app` (a real LaunchServices launch, not from a shell) starts and shows the dashboard
+- The three P0 additions in the running app: the multi-line paste dialog holds the text until confirmed and a single line pastes straight through; per-session font size is saved and resizes the PTY grid (131x43 → 106x38 at 16 px); "Locate folder…" relinks a missing workspace
+- The Resource use panel against `ps`: per-session memory, NEXUS's own row including the WebKit helpers
 
 Still unchecked:
 
-- How it looks on macOS: light theme, the terminal rendering of Claude Code / Codex, fonts. Needs a person or a screenshot
+- How it looks on macOS: light theme, the terminal rendering of Claude Code / Codex, fonts. The owner was asked to look and had not answered when the session ended
 - IME input and wide Unicode in the terminal
-- A build launched from Finder for real (only simulated with a minimal environment)
 - Everything on Windows: ConPTY, WSL distro listing, `.cmd` agent shims via `cmd.exe /d /c`
 
 ## Architecture
@@ -108,13 +127,14 @@ Not started:
 
 1. ~~Verify on macOS and fix what's wrong.~~ Done except the visual checks listed above.
 2. ~~Finish P0: multi-line paste confirmation, relink action for a missing folder, per-session font size.~~ Done.
-3. Agent awareness (PRD Phase 2, architecture gate 4). Adapter trait, Claude Code session ID / resume / hook-based state are in. Remaining:
+3. Memory (owner priority, not in the PRD order). Profile first, then try in this order: lower the default scrollback and make it a setting; dispose or suspend xterm instances of workspaces that are not on screen (the 512 KB replay ring can repaint them); check whether the app process's 125 MB is mostly the web view framework or something NEXUS holds. Possible additions to the panel: memory shown in each pane header or the status bar, a warning above a threshold, sorting, "close all exited".
+4. Agent awareness (PRD Phase 2, architecture gate 4). Adapter trait, Claude Code session ID / resume / hook-based state are in. Remaining:
    - Notifications (FR-067) on the transitions to Needs permission and Finished turn while the window is not focused (`tauri-plugin-notification`).
    - Codex adapter. `codex resume <SESSION_ID>` exists (codex-cli 0.156.1) and `-c notify=[…]` should give turn-complete events with the thread ID, but it could not be spiked here: on this machine every Codex turn fails with "model is not supported when using Codex with a ChatGPT account", so no event ever fired. Do not wire it from documentation alone.
    - Custom agent profiles (FR-068).
-4. Project config and trust flow.
-5. Remote hosts (PRD Phase 3): do the SSH spike first (native Rust library vs. OpenSSH subprocess, PRD 9.9), then keychain, then tmux-backed sessions.
-6. Signing and notarisation for macOS once an Apple Developer ID is available.
+5. Project config and trust flow.
+6. Remote hosts (PRD Phase 3): do the SSH spike first (native Rust library vs. OpenSSH subprocess, PRD 9.9), then keychain, then tmux-backed sessions.
+7. Signing and notarisation for macOS once an Apple Developer ID is available.
 
 ## Agent awareness check
 
@@ -145,4 +165,4 @@ Release build on macOS 26.3 (Apple Silicon), opened from the bundle, dashboard s
 - Agent and shell detection runs on every "new session" (`detect_shells` / `detect_agents` are not cached).
 - A database open failure at startup aborts the app with no dialog.
 - Each CI run creates a new pre-release (`build-N`); old ones are not cleaned up.
-- The rules of the PRD's module layout (`domain/`, `ports/`, `adapters/`) are not followed yet; the Rust code is five flat modules. Introduce the ports when the second implementation of something arrives (SSH transport, agent adapters).
+- The rules of the PRD's module layout (`domain/`, `ports/`, `adapters/`) are not followed yet; the Rust code is flat modules. Introduce the ports when the second implementation of something arrives (SSH transport, agent adapters).
