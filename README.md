@@ -45,7 +45,9 @@ This is the first slice of Phase 1 (local terminal workspace).
 - Project startup sessions: a `.nexus/workspace.json` in the project can define sessions to start. NEXUS shows exactly what would run and starts nothing until you approve; any change to the file needs a new approval.
 - Custom agent launch profiles, desktop notifications when a local agent needs permission or finishes a turn, a scrollback-size setting, and export/import of settings.
 
-Not built yet: Codex and other agents' state and resume (only Claude Code has them), state for agents running on remote machines, port forwarding, multi-window, auto-update, custom keybindings, scrollback persistence, signing/notarisation, and the web app with cloud sync.
+- Web companion (optional, off by default): link a computer to a NEXUS Web server with a one-time code and see your workspaces, sessions and remote machines in a browser. It uploads names and states only, shows you exactly what it sends, and can be paused, limited to chosen workspaces, wiped or unlinked. The server is in `cloud/`.
+
+Not built yet: Codex and other agents' state and resume (only Claude Code has them), state for agents running on remote machines, port forwarding, multi-window, auto-update, custom keybindings, scrollback persistence, signing/notarisation, and the rest of the web side: live terminal access from the browser, two-way sync, and editing anything from the web.
 
 ## Shortcuts
 

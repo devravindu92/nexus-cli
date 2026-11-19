@@ -19,6 +19,7 @@ pub struct AppState {
     pub pty: SessionManager,
     pub agents: AgentMonitor,
     pub usage: std::sync::Mutex<crate::usage::UsageSampler>,
+    pub cloud: Arc<crate::cloud::Cloud>,
 }
 
 /// Add the runtime-only agent fields to a session read from the database.
@@ -978,6 +979,57 @@ pub fn project_config_untrust(state: State<AppState>, workspace_id: String) -> C
     state.db.project_trust_clear(&workspace_id)
 }
 
+// ---- web companion (optional, off until linked) -----------------------------
+
+use crate::cloud::CloudStatus;
+
+#[tauri::command]
+pub fn cloud_status(state: State<AppState>) -> CmdResult<CloudStatus> {
+    state.cloud.status(&state.db)
+}
+
+#[tauri::command]
+pub async fn cloud_link(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    url: String,
+    code: String,
+    name: String,
+) -> CmdResult<CloudStatus> {
+    state.cloud.link(&state.db, &url, &code, name.trim())?;
+    log_activity(&app, &state.db, "cloud.linked", "This computer was linked to NEXUS Web", None, None);
+    let _ = state.cloud.sync(&state.db, &state.agents, true);
+    state.cloud.status(&state.db)
+}
+
+#[tauri::command]
+pub async fn cloud_unlink(app: AppHandle, state: State<'_, AppState>) -> CmdResult<CloudStatus> {
+    state.cloud.unlink(&state.db)?;
+    log_activity(&app, &state.db, "cloud.unlinked", "This computer was unlinked from NEXUS Web", None, None);
+    state.cloud.status(&state.db)
+}
+
+#[tauri::command]
+pub async fn cloud_sync_now(state: State<'_, AppState>) -> CmdResult<CloudStatus> {
+    state.cloud.sync(&state.db, &state.agents, true)?;
+    state.cloud.status(&state.db)
+}
+
+/// Remove what this computer published. Pauses syncing so it stays removed.
+#[tauri::command]
+pub async fn cloud_delete_data(state: State<'_, AppState>) -> CmdResult<CloudStatus> {
+    state.db.pref_set(crate::cloud::PREF_PAUSED, "on")?;
+    state.cloud.delete_remote_data(&state.db)?;
+    state.cloud.status(&state.db)
+}
+
+/// Exactly what a sync would upload right now, for the user to read.
+#[tauri::command]
+pub fn cloud_preview(state: State<AppState>) -> CmdResult<String> {
+    let value = crate::cloud::build_state(&state.db, &state.agents)?;
+    serde_json::to_string_pretty(&value).map_err(|e| e.to_string())
+}
+
 // ---- settings export / import ----------------------------------------------
 
 /// Portable settings: preferences, custom agents and remote machine profiles.
@@ -1006,8 +1058,9 @@ struct ExportedAgent {
 const LOCAL_ONLY_PREFS: &[&str] = &["lastView"];
 
 fn is_local_only_pref(key: &str) -> bool {
-    // "remoteDir:<workspace>:<host>" refers to IDs of this installation.
-    LOCAL_ONLY_PREFS.contains(&key) || key.starts_with("remoteDir:")
+    // "remoteDir:<workspace>:<host>" refers to IDs of this installation, and
+    // the web companion link belongs to this computer alone.
+    LOCAL_ONLY_PREFS.contains(&key) || key.starts_with("remoteDir:") || key.starts_with("cloud")
 }
 
 fn export_settings(db: &Db) -> CmdResult<SettingsFile> {

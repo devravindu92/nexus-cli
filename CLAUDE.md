@@ -13,7 +13,7 @@ Local-first desktop terminal workspace for shells and AI coding agents. Tauri 2 
 - `cd src-tauri && cargo test` — Rust unit tests (must pass before committing)
 - `npm run tauri build` — release bundle for the current OS (`-- --bundles app` for just the macOS `.app`)
 
-Linux needs `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf`. With no display, run the app under Xvfb.
+Linux needs `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev patchelf`. `cd cloud && npm test` runs the server's tests. With no display, run the app under Xvfb.
 
 ## Where things live
 
@@ -22,6 +22,8 @@ Linux needs `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev lib
 - `src-tauri/src/agent.rs` — agent adapters, the `agent-hook` helper, state monitor
 - `src-tauri/src/usage.rs` — memory / CPU per session and for the app
 - `src-tauri/src/remote.rs` — remote machines over the system `ssh`, tmux-backed durable sessions, connection test and metrics
+- `src-tauri/src/cloud.rs` — optional web companion: link, keychain token, what is uploaded, sync loop
+- `cloud/` — the web companion server (Node 22 + Postgres, no framework) and its web page; deployed separately, see `docs/HANDOFF.md`
 - `src-tauri/src/project.rs` — `.nexus/workspace.json` parsing, validation and trust status
 - `src-tauri/src/platform.rs` — shell and agent detection, PATH, terminal environment
 - `src/App.tsx` — app state, actions and shortcuts; `src/lib/terminals.ts` — xterm instances; `src/lib/layout.ts` — tab and split model
@@ -31,8 +33,9 @@ Linux needs `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev lib
 - Never claim process persistence. A local PTY dies with the app. Workspace restoration, terminal restoration, process reattachment and agent continuation are four different things with different labels (PRD 3.3). "Continue conversation" is agent continuation in a new process.
 - Session state must be truthful and text-labelled, never colour alone. Agent state comes only from the agent CLI's own documented signals (hooks, structured output). Never infer it from terminal text; with no reliable signal, show "State unknown".
 - The webview never gets general process execution. Everything goes through the typed commands in `src-tauri/src/commands.rs`. Launch with argument arrays, never concatenated shell strings.
-- No secrets in SQLite, project config, logs or activity. Credentials belong in the OS keychain. The agent hook helper records event names and IDs only, never prompts, tool input or output.
-- Local-first: no account, no network calls, no telemetry.
+- No secrets in SQLite, project config, logs or activity. Credentials belong in the OS keychain. The web companion's device token is the one secret NEXUS holds: keychain only (`keyring` crate), and linking is refused when no keychain is available.
+- What the web companion uploads is defined in one place, `cloud::build_state`, and filtered again by `cloud/sanitize.js` on the server. Names and states only: never commands, arguments, session folders, environment values, terminal output or key paths. Adding a field means changing both and their tests. The server must never be able to make the desktop do anything. The agent hook helper records event names and IDs only, never prompts, tool input or output.
+- Local-first: no account needed, no telemetry, and no network calls unless the user has linked the web companion (`cloud.rs`). An unlinked install must stay silent. SSH to machines the user registered is the only other network use.
 - Terminal output is not persisted. The replay buffer in `pty.rs` is in-memory only.
 - Database changes are append-only migrations in `MIGRATIONS` in `db.rs`; never edit an existing entry. The schema is at version 4.
 - Remote machines go through the system `ssh` client only. Never add `StrictHostKeyChecking=no` or any option that weakens host-key checking, never write to `~/.ssh`, and never store or pass a password or passphrase: SSH asks for those in the terminal. Host fields are validated against option injection in `RemoteHost::validate`; keep new fields under the same check.

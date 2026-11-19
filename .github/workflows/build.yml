@@ -3,7 +3,7 @@ name: Build desktop apps
 on:
   push:
     branches: [main, "claude/**"]
-    paths-ignore: ["**.md", "docs/**"]
+    paths-ignore: ["**.md", "docs/**", "cloud/**"]
   workflow_dispatch:
 
 concurrency:
@@ -47,7 +47,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev patchelf
 
       - uses: actions/setup-node@v4
         with:

@@ -1,5 +1,6 @@
 //! NEXUS desktop core.
 mod agent;
+mod cloud;
 mod commands;
 mod db;
 mod models;
@@ -49,6 +50,29 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<t
     MenuBuilder::new(app)
         .items(&[&app_menu, &edit_menu, &window_menu])
         .build()
+}
+
+/// Web companion: while this computer is linked and not paused, publish the
+/// metadata when it changes. An unlinked install does nothing here beyond
+/// reading two preferences every 30 seconds; it makes no network request.
+fn start_cloud_sync(handle: tauri::AppHandle) {
+    let _ = std::thread::Builder::new()
+        .name("cloud-sync".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            let Some(state) = handle.try_state::<AppState>() else {
+                continue;
+            };
+            let before = state.cloud.status(&state.db).ok();
+            let changed = state.cloud.sync(&state.db, &state.agents, false);
+            let after = state.cloud.status(&state.db).ok();
+            // Tell the UI when something worth showing changed.
+            if matches!(changed, Ok(true))
+                || before.as_ref().map(|s| &s.last_error) != after.as_ref().map(|s| &s.last_error)
+            {
+                let _ = handle.emit("cloud-changed", ());
+            }
+        });
 }
 
 /// Desktop notification when an agent starts needing the user (FR-067), but
@@ -139,7 +163,9 @@ pub fn run() {
                 pty: pty::SessionManager::new(),
                 agents,
                 usage: Default::default(),
+                cloud: Arc::new(cloud::Cloud::default()),
             });
+            start_cloud_sync(app.handle().clone());
             // Resolve the login-shell PATH off the main thread.
             std::thread::spawn(|| {
                 platform::effective_path();
@@ -168,6 +194,12 @@ pub fn run() {
             commands::project_config_untrust,
             commands::settings_export,
             commands::settings_import,
+            commands::cloud_status,
+            commands::cloud_link,
+            commands::cloud_unlink,
+            commands::cloud_sync_now,
+            commands::cloud_delete_data,
+            commands::cloud_preview,
             commands::workspace_list,
             commands::workspace_create,
             commands::workspace_update,

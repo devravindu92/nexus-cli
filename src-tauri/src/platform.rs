@@ -318,6 +318,11 @@ pub fn detect_agents() -> Vec<AgentProfile> {
         .collect()
 }
 
+/// (id, display name) of the built-in agents, without touching the disk.
+pub fn detect_agents_static() -> Vec<(&'static str, &'static str)> {
+    crate::agent::adapters().iter().map(|a| (a.id(), a.name())).collect()
+}
+
 /// Turn a logical program + args into something the OS can execute directly.
 /// Always an argument array - never a concatenated shell string.
 pub fn resolve_launch(program: &str, args: &[String]) -> Result<(String, Vec<String>), String> {

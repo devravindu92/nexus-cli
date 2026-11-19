@@ -134,6 +134,23 @@ Things worth knowing before changing code:
 - **Shortcuts** are handled in one capture-phase `keydown` listener in `App.tsx`. Modifier is ⌘ on macOS and Ctrl+Shift elsewhere. Full table in `README.md`.
 - **Data location.** `database.sqlite` in the OS app-data dir for identifier `dev.nexus-codename.desktop` (macOS: `~/Library/Application Support/dev.nexus-codename.desktop/`). Delete it to reset.
 
+## Web companion (PRD Phase 4, first slice)
+
+What exists is the PRD's "cloud metadata mode" only, one-way: desktops publish, the browser reads.
+
+- **Server:** `cloud/` — Node 22, plain `node:http`, one dependency (`pg`), Postgres. `server.js` (routes), `sanitize.js` (the allow-list of what may be stored), `public/` (the web page: vanilla JS, no build step, all server text inserted with `textContent`). Schema is created at boot with `CREATE TABLE IF NOT EXISTS`; there is no migration tool yet.
+- **Deployed** on the owner's EasyDev project `demo` as app `nexus-cloud` with database `nexus-db`: https://nexus-cloud-demo.apps.162-35-14-226.sslip.io. To redeploy, get an upload link for the app from EasyDev and run its "folder" command inside `cloud/`. Pushing to GitHub does not deploy it, and changes under `cloud/` do not trigger installer builds.
+- **Accounts:** email + password (scrypt), session cookie (HttpOnly, Secure, SameSite=Strict, 14 days), and a required custom header on every state-changing request. Sign-up needs the `SIGNUP_CODE` secret set on the app, so strangers cannot create accounts on the owner's server. There is no email verification and no password reset (no mail service).
+- **Devices:** the signed-in user gets a one-time pairing code on the web (8 characters, 10 minutes, single use) and types it into the desktop, which receives a device token. Tokens and session tokens are stored hashed. Revoking a device on the web clears its token and deletes what it published; the next upload gets 401 and the desktop pauses itself with a message.
+- **Sync:** the desktop sends its whole published state with a revision number (`PUT /api/sync/state`); the server keeps it only if the revision is newer, so retries and late arrivals are harmless. There is no outbox, no per-record revision, no tombstones and no conflict handling, because nothing can be edited on the web yet. The desktop checks every 30 s while linked and uploads only when the state changed or 2 minutes passed (which is also how the web shows a computer as online).
+- **Desktop:** `cloud.rs`, Settings → Web companion. Token in the OS keychain via the `keyring` crate; HTTP via `ureq` (both new dependencies, used only by this feature). The user can see the exact JSON that is sent, choose workspaces, leave out machine names, pause, delete their synced data, and unlink.
+
+Verified: the server's routes with curl against the live deployment (sign-up code, pairing, single-use codes, the allow-list dropping secret-looking fields, revision rules, revocation, account deletion, security headers); the web page in Chromium with sample data including HTML in names; the desktop sync client against the live server (`cloud::tests::live_sync_against_a_server`, token supplied directly); the Settings section in the running app, including the refusal to link when no keychain is available.
+
+**Not verified:** storing and reading the token in a real keychain. The Linux test machine had none that worked, so a link from the app has never completed on any platform; on macOS expect a keychain prompt the first time. The 30-second background loop was not observed uploading in a running app.
+
+Not built (PRD 5.7): live terminal access from the browser and the session broker, the remote connector, two-way sync with conflicts, editing from the web, session expiry controls beyond the fixed 14 days, step-up confirmation, multi-user sharing. Rate limits are in memory, so they reset on restart and assume one instance.
+
 ## Requirement coverage
 
 Done (PRD P0 unless noted): FR-002, 003, 004, 010–014, 020–025, 027–029, 040–044, 060–064, dashboard 110–112, 130, 131, 150; multi-line paste confirmation (PRD 7.4). P1/P2 done: FR-005 / FR-157 (settings export and import), FR-017 (relink), FR-018 / FR-093 (remote folder per workspace and machine), FR-050 in part (scrollback size setting), FR-067 / FR-120–123 (notifications with per-kind switches; see "Not verified"), FR-068 (custom agents), FR-080–083, FR-085, FR-087–092, FR-094–098, FR-101–105 (remote machines; see "Not verified"), FR-084 (agent forwarding, opt-in with a warning), FR-086 (host keys: left entirely to OpenSSH, changed keys reported and never bypassed), FR-133, FR-152–156 (project config and trust), dashboard FR-113–117 in part.
@@ -156,7 +173,7 @@ Not started:
 - SEC-004 secret redaction in logs (there is still no logging), diagnostic export.
 - FR-006 multi-window, FR-007 auto-update, FR-030 duplicate session, FR-031 drag between workspaces, FR-032 custom keybindings, FR-046 scrollback persistence, FR-051.
 - FR-099 / FR-100 remote companion, FR-106 / FR-107 extra metrics and alerts, FR-141 / FR-143 / FR-145 port detection and forwarding, FR-142 open in editor.
-- Web app, identity and cloud sync (PRD 5.7, Phase 4). This needs decisions that are the owner's to make before any code: where it is hosted, which identity provider, and who operates it.
+- The rest of the web side (see "Web companion" above for what exists): live terminal access, two-way sync, the remote connector.
 
 ## Suggested order of work
 
@@ -166,7 +183,8 @@ Not started:
 4. Codex adapter, once a Codex CLI that can complete a turn is available to spike against. Do not wire it from documentation alone.
 5. Smaller PRD items from "Not started": duplicate session, open in editor, working-tree status, custom keybindings.
 6. Signing and notarisation for macOS once an Apple Developer ID is available; auto-update depends on it.
-7. Web app and cloud sync, after the owner has decided hosting and identity.
+7. Web companion: link a real Mac first (keychain path is unverified), then decide whether live terminal access is wanted at all; it is the part with the largest security surface.
+8. Business and release decisions: see the research document the owner has (open-source the app, paid hosted companion, signing and update process). The repository still has no licence file, SECURITY.md or updater.
 
 ## Agent awareness check
 

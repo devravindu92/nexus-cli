@@ -1,6 +1,7 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useEffect, useState } from "react";
 import { api, parseCommandLine, Session } from "../lib/api";
+import { CloudSettings } from "./Cloud";
 import { ProjectReview } from "./Project";
 import { HostDialog, RemoteSessionDialog } from "./Remote";
 import { canResume, kindLabel, ModalState, timeAgo, useApp } from "../lib/state";
@@ -383,6 +384,8 @@ function Settings({ close }: { close: () => void }) {
         </button>
       </div>
 
+      <CloudSettings />
+
       <h3>Keyboard shortcuts</h3>
       <div className="shortcuts">
         {shortcuts.map(([label, keys]) => (
@@ -393,7 +396,7 @@ function Settings({ close }: { close: () => void }) {
         ))}
       </div>
       <p className="fine">
-        NEXUS {app.info.version} · local-first: no account, no telemetry, nothing leaves this computer.
+        NEXUS {app.info.version} · local-first: no account needed, no telemetry. Nothing leaves this computer unless you link the web companion above.
       </p>
       <div className="dialog-actions">
         <button className="btn primary" onClick={close}>

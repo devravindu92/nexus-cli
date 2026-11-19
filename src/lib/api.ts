@@ -123,6 +123,15 @@ export interface HostMetrics {
   uptimeSecs: number | null;
 }
 
+export interface CloudStatus {
+  linked: boolean;
+  url: string | null;
+  deviceName: string | null;
+  paused: boolean;
+  lastSyncAt: number | null;
+  lastError: string | null;
+}
+
 export interface ProjectSession {
   name: string;
   kind: SessionKind;
@@ -283,6 +292,14 @@ export const api = {
     invoke<Session[]>("project_config_start", { workspaceId, approved }),
   projectConfigUntrust: (workspaceId: string) =>
     invoke<void>("project_config_untrust", { workspaceId }),
+
+  cloudStatus: () => invoke<CloudStatus>("cloud_status"),
+  cloudLink: (url: string, code: string, name: string) =>
+    invoke<CloudStatus>("cloud_link", { url, code, name }),
+  cloudUnlink: () => invoke<CloudStatus>("cloud_unlink"),
+  cloudSyncNow: () => invoke<CloudStatus>("cloud_sync_now"),
+  cloudDeleteData: () => invoke<CloudStatus>("cloud_delete_data"),
+  cloudPreview: () => invoke<string>("cloud_preview"),
 
   settingsExport: (path: string) => invoke<void>("settings_export", { path }),
   settingsImport: (path: string) => invoke<string>("settings_import", { path }),

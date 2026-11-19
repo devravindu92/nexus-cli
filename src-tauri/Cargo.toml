@@ -23,6 +23,8 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 sysinfo = { version = "0.36.1", default-features = false, features = ["system"] }
 tauri-plugin-notification = "2"
+ureq = { version = "3", features = ["json"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
 [profile.release]
 codegen-units = 1
