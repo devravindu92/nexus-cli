@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, Session } from "../lib/api";
 import { kindLabel, ModalState, timeAgo, useApp } from "../lib/state";
+import { PastePolicy } from "../lib/terminals";
 import { ThemePref } from "../lib/themes";
 
 export function Modal({ modal }: { modal: NonNullable<ModalState> }) {
@@ -26,6 +27,7 @@ export function Modal({ modal }: { modal: NonNullable<ModalState> }) {
           <>
             <h2>{modal.title}</h2>
             <p>{modal.message}</p>
+            {modal.detail && <pre className="dialog-detail">{modal.detail}</pre>}
             <div className="dialog-actions">
               <button className="btn" onClick={close}>
                 Cancel
@@ -197,6 +199,31 @@ function Settings({ close }: { close: () => void }) {
           <button className="btn" aria-label="Larger" onClick={() => app.setFontSize(app.fontSize + 1)}>
             +
           </button>
+        </div>
+      </div>
+      <div className="setting">
+        <label id="paste-label" title="Pasted line breaks are sent as Enter and can run commands immediately.">
+          Confirm multi-line paste
+        </label>
+        <div className="segmented" role="radiogroup" aria-labelledby="paste-label">
+          {(
+            [
+              ["always", "Always", "Ask before every paste that contains a line break"],
+              ["auto", "If unsafe", "Ask only when the program has not enabled bracketed paste"],
+              ["never", "Never", "Paste without asking"],
+            ] as [PastePolicy, string, string][]
+          ).map(([value, label, hint]) => (
+            <button
+              key={value}
+              role="radio"
+              aria-checked={app.pastePolicy === value}
+              className={app.pastePolicy === value ? "on" : ""}
+              title={hint}
+              onClick={() => app.setPastePolicy(value)}
+            >
+              {label}
+            </button>
+          ))}
         </div>
       </div>
       <h3>Keyboard shortcuts</h3>

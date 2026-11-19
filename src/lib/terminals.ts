@@ -24,8 +24,28 @@ export interface Appearance {
 export const DEFAULT_FONT =
   'ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Mono", Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace';
 
+export type PastePolicy = "always" | "auto" | "never";
+
+/** Called instead of pasting when a paste needs the user's confirmation. */
+export type PasteGuard = (id: string, text: string, bracketed: boolean) => void;
+
 const entries = new Map<string, Entry>();
+const fontOverrides = new Map<string, number>();
 let appearance: Appearance = { theme: {}, fontSize: 13, fontFamily: DEFAULT_FONT };
+let pastePolicy: PastePolicy = "always";
+let pasteGuard: PasteGuard | null = null;
+
+const fontSizeFor = (id: string) => fontOverrides.get(id) ?? appearance.fontSize;
+
+/**
+ * Pasted line breaks are sent as Enter, so a multi-line paste can run commands
+ * before the user has read them (PRD 7.4). Programs that turn on bracketed
+ * paste receive the text as one block instead; "auto" trusts that.
+ */
+function needsPasteConfirm(text: string, bracketed: boolean): boolean {
+  if (pastePolicy === "never" || !/[\r\n]/.test(text)) return false;
+  return pastePolicy === "always" || !bracketed;
+}
 
 function ensure(id: string): Entry {
   let entry = entries.get(id);
@@ -34,7 +54,7 @@ function ensure(id: string): Entry {
     allowProposedApi: false,
     cursorBlink: true,
     scrollback: 10000,
-    fontSize: appearance.fontSize,
+    fontSize: fontSizeFor(id),
     fontFamily: appearance.fontFamily,
     theme: appearance.theme,
     macOptionClickForcesSelection: true,
@@ -51,6 +71,20 @@ function ensure(id: string): Entry {
   });
   const el = document.createElement("div");
   el.className = "term-host";
+  // Capture phase: runs before xterm's own paste handling on its textarea.
+  el.addEventListener(
+    "paste",
+    (e) => {
+      const text = e.clipboardData?.getData("text/plain") ?? "";
+      const bracketed = term.modes.bracketedPasteMode;
+      if (pasteGuard && needsPasteConfirm(text, bracketed)) {
+        e.preventDefault();
+        e.stopPropagation();
+        pasteGuard(id, text, bracketed);
+      }
+    },
+    true,
+  );
   entry = { term, fit, search, el, opened: false, subscribed: false, everSubscribed: false };
   entries.set(id, entry);
   return entry;
@@ -123,8 +157,33 @@ export const terminals = {
     return entries.get(id)?.term.getSelection() ?? "";
   },
 
-  paste(id: string, text: string) {
-    entries.get(id)?.term.paste(text);
+  /** Paste text; `confirmed` skips the multi-line check (the user said yes). */
+  paste(id: string, text: string, confirmed = false) {
+    const entry = entries.get(id);
+    if (!entry) return;
+    const bracketed = entry.term.modes.bracketedPasteMode;
+    if (!confirmed && pasteGuard && needsPasteConfirm(text, bracketed)) {
+      pasteGuard(id, text, bracketed);
+      return;
+    }
+    entry.term.paste(text);
+  },
+
+  setPasteGuard(policy: PastePolicy, guard: PasteGuard | null) {
+    pastePolicy = policy;
+    pasteGuard = guard;
+  },
+
+  /** Per-session font size; null goes back to the global size. */
+  setFontOverride(id: string, size: number | null) {
+    if ((fontOverrides.get(id) ?? null) === size) return;
+    if (size == null) fontOverrides.delete(id);
+    else fontOverrides.set(id, size);
+    const entry = entries.get(id);
+    if (entry) {
+      entry.term.options.fontSize = fontSizeFor(id);
+      this.fit(id);
+    }
   },
 
   find(id: string, query: string, backwards = false) {
@@ -141,7 +200,7 @@ export const terminals = {
     appearance = next;
     for (const [id, entry] of entries) {
       entry.term.options.theme = next.theme;
-      entry.term.options.fontSize = next.fontSize;
+      entry.term.options.fontSize = fontSizeFor(id);
       entry.term.options.fontFamily = next.fontFamily;
       this.fit(id);
     }
@@ -153,5 +212,6 @@ export const terminals = {
     entry.term.dispose();
     entry.el.remove();
     entries.delete(id);
+    fontOverrides.delete(id);
   },
 };

@@ -30,7 +30,7 @@ import {
   WorkspaceLayout,
 } from "./lib/layout";
 import { AppContext, Ctx, ModalState, Placement } from "./lib/state";
-import { DEFAULT_FONT, terminals } from "./lib/terminals";
+import { DEFAULT_FONT, PastePolicy, terminals } from "./lib/terminals";
 import { resolveTheme, TERMINAL_THEMES, ThemePref } from "./lib/themes";
 
 interface Toast {
@@ -51,6 +51,7 @@ export default function App() {
   const [gitBranch, setGitBranch] = useState<string | null>(null);
   const [themePref, setThemePrefState] = useState<ThemePref>("system");
   const [fontSize, setFontSizeState] = useState(13);
+  const [pastePolicy, setPastePolicyState] = useState<PastePolicy>("always");
   const [modal, setModalState] = useState<ModalState>(null);
   const [paletteOpen, setPaletteOpenState] = useState(false);
   const [focusTick, setFocusTick] = useState(0);
@@ -95,6 +96,8 @@ export default function App() {
           setThemePrefState(prefs.theme);
         const size = Number(prefs.fontSize);
         if (size >= 9 && size <= 28) setFontSizeState(size);
+        if (prefs.pastePolicy === "always" || prefs.pastePolicy === "auto" || prefs.pastePolicy === "never")
+          setPastePolicyState(prefs.pastePolicy);
         const last = prefs.lastView;
         if (last && ws.some((w) => w.id === last)) setViewState(last);
         else if (ws.length === 1 && !last) setViewState(ws[0].id);
@@ -144,6 +147,11 @@ export default function App() {
       fontFamily: DEFAULT_FONT,
     });
   }, [themePref, fontSize, systemTick]);
+
+  // Per-session font size overrides follow the session records.
+  useEffect(() => {
+    for (const s of sessions) terminals.setFontOverride(s.id, s.fontSize);
+  }, [sessions]);
 
   // ---- layout persistence (debounced, only what changed) -------------------
   const savedLayouts = useRef<Record<string, string>>({});
@@ -253,6 +261,26 @@ export default function App() {
       fail(err);
     }
   }, [fail, setView]);
+
+  const relinkWorkspace = useCallback(
+    async (ws: Workspace) => {
+      try {
+        const picked = await open({
+          directory: true,
+          multiple: false,
+          title: `Locate the folder for “${ws.name}”`,
+        });
+        if (!picked || Array.isArray(picked)) return;
+        const saved = await api.workspaceRelink(ws.id, picked);
+        setWorkspaces((prev) => prev.map((w) => (w.id === saved.id ? saved : w)));
+        // Session folders inside the old root moved with it.
+        setSessions(await api.sessionList());
+      } catch (err) {
+        fail(err);
+      }
+    },
+    [fail],
+  );
 
   const updateWorkspace = useCallback(
     (ws: Workspace) => {
@@ -405,6 +433,18 @@ export default function App() {
     [fail],
   );
 
+  const setSessionFontSize = useCallback(
+    (id: string, size: number | null) => {
+      const patch =
+        size == null ? { clearFontSize: true } : { fontSize: Math.min(28, Math.max(9, size)) };
+      api
+        .sessionUpdate(id, patch)
+        .then((saved) => setSessions((prev) => prev.map((p) => (p.id === saved.id ? saved : p))))
+        .catch(fail);
+    },
+    [fail],
+  );
+
   const restoreClosed = useCallback(
     async (closed: Session) => {
       try {
@@ -441,6 +481,35 @@ export default function App() {
     setFontSizeState(clamped);
     api.prefSet("fontSize", String(clamped)).catch(() => {});
   }, []);
+
+  const setPastePolicy = useCallback((policy: PastePolicy) => {
+    setPastePolicyState(policy);
+    api.prefSet("pastePolicy", policy).catch(() => {});
+  }, []);
+
+  // Multi-line pastes are held until the user confirms (PRD 7.4).
+  useEffect(() => {
+    terminals.setPasteGuard(pastePolicy, (id, text, bracketed) => {
+      const lines = text.replace(/\r\n?/g, "\n").replace(/\n+$/, "").split("\n");
+      const shown = lines.slice(0, 12).map((l) => (l.length > 160 ? `${l.slice(0, 160)}…` : l));
+      if (lines.length > shown.length) shown.push(`… ${lines.length - shown.length} more lines`);
+      const count = lines.length === 1 ? "a line break" : `${lines.length} lines`;
+      setModal({
+        kind: "confirm",
+        title: `Paste ${count} into the terminal?`,
+        message: bracketed
+          ? "The program in this terminal receives pasted text as one block, but check it before you continue."
+          : "Each line break is sent as Enter, so commands can start running straight away.",
+        detail: shown.join("\n"),
+        confirmLabel: "Paste",
+        onConfirm: () => {
+          terminals.paste(id, text, true);
+          terminals.focus(id);
+        },
+      });
+    });
+    return () => terminals.setPasteGuard(pastePolicy, null);
+  }, [pastePolicy, setModal]);
 
   const refreshAgents = useCallback(() => {
     api.agents().then(setAgents).catch(fail);
@@ -570,18 +639,21 @@ export default function App() {
     gitBranch,
     themePref,
     fontSize,
+    pastePolicy,
     focusTick,
     findFor,
     setView,
     addWorkspace,
     updateWorkspace,
     removeWorkspace,
+    relinkWorkspace,
     newSession,
     runCommandPrompt,
     closeSession,
     startSession,
     renameSession,
     setSessionAccent,
+    setSessionFontSize,
     restoreClosed,
     focusSession,
     setLayout,
@@ -589,6 +661,7 @@ export default function App() {
     setPaletteOpen,
     setThemePref,
     setFontSize,
+    setPastePolicy,
     setFindFor,
     refreshAgents,
   };

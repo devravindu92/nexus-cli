@@ -46,6 +46,8 @@ pub struct Session {
     pub restored: bool,
     pub created_at: i64,
     pub closed_at: Option<i64>,
+    /// Terminal font size override in px; `None` follows the global setting.
+    pub font_size: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

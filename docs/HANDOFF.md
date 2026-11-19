@@ -11,7 +11,7 @@ State of the project as of 19 November 2026, written so a new session can contin
 
 ## What has and hasn't been verified
 
-Verified by running the real app on Linux (Xvfb, keyboard-driven) and by 12 Rust unit tests:
+Verified by running the real app on Linux (Xvfb, keyboard-driven) and by 14 Rust unit tests:
 
 - App start, onboarding, shell and agent detection
 - New tab, split right, split down, PTY sizing follows the pane
@@ -20,19 +20,24 @@ Verified by running the real app on Linux (Xvfb, keyboard-driven) and by 12 Rust
 - Command palette, dashboard, activity feed, dark theme
 - Heavy output (1.5 million lines in about 0.5 s), truecolor
 
-Compiled and unit-tested in CI on macOS and Windows, but **never opened by a person on either**. Nothing below has been checked:
+Verified on macOS 26.3 (Apple Silicon) on 19 November 2026, by driving the dev build through the accessibility API (System Events), synthetic mouse events and checking side effects (files written by the shell, SQLite rows, child processes). No screenshots were possible, so "verified" here means behaviour, not appearance:
 
-- macOS window chrome: `titleBarStyle: Overlay`, traffic lights over the sidebar header (80 px left padding in `.is-mac .sidebar-head`), dragging by the top bar
-- macOS menu: custom menu in `lib.rs` deliberately has no "Close Window" item so ⌘W reaches the webview and closes the focused pane
-- ⌘C / ⌘V in the terminal via the Edit menu
-- Login-shell PATH capture on macOS (`platform.rs::login_shell_path`), which is what lets a Finder-launched app find `claude`, `codex`, `node`
-- Actually launching an agent (Claude Code was detected on Linux but never started)
-- The native folder picker
-- Light theme, IME input, wide Unicode in the terminal
+- `cargo test` (14 tests) and `npm run build` pass locally
+- Window chrome: traffic lights sit at `trafficLightPosition {16, 24}`, vertically centred on the 44 px top bar (the default position was 6 px too high); the window drags by the top bar and the sidebar header; double-click on the top bar zooms
+- Menu: App / Edit / Window only; ⌘W closes the focused pane and the window stays; ⌘Q quits and no child process survives
+- ⌘T, ⌘D, ⌘⇧D; PTY size follows the pane (131x43 full, 63x20 after two splits)
+- ⌘V pastes into the shell; double-click selects a word and ⌘C copies it
+- Native folder picker (opens as a sheet) for adding a workspace and for relinking one
+- Agent and shell detection; Claude Code and Codex both start and stay running, including when the app is started with a Finder-style minimal environment (`env -i`, `PATH=/usr/bin:/bin:/usr/sbin:/sbin`), which exercises `platform.rs::login_shell_path`
+- Restart recovery (sessions come back as Recoverable, tab order kept), "Start as new process", tab drag-to-reorder
+- The `build-1` release `.dmg`: the app is killed at launch (exit 137) while the quarantine flag is set, and runs normally once it is cleared with `xattr -cr`. Nothing in the code is wrong; it needs signing and notarisation (step 6 below)
+
+Still unchecked:
+
+- How it looks on macOS: light theme, the terminal rendering of Claude Code / Codex, fonts. Needs a person or a screenshot
+- IME input and wide Unicode in the terminal
+- A build launched from Finder for real (only simulated with a minimal environment)
 - Everything on Windows: ConPTY, WSL distro listing, `.cmd` agent shims via `cmd.exe /d /c`
-- Tab drag-to-reorder
-
-**First job for a local Mac session: run the app and go through that macOS list.**
 
 ## Architecture
 
@@ -64,22 +69,23 @@ Things worth knowing before changing code:
 - **Terminals outlive components.** `terminals.ts` keeps each xterm and its DOM node in a map and re-parents the node on mount, so tab and workspace switches keep scrollback.
 - **Layout.** One JSON blob per workspace in the `layout` table, saved 250 ms after a change. `reconcile()` drops panes whose session is gone and gives unplaced sessions a tab.
 - **PATH.** `effective_path()` = login-shell PATH + inherited PATH + common install dirs, computed once. It is used to find agents and is set in every spawned process's environment.
+- **Paste guard.** `terminals.ts` listens for `paste` in the capture phase on each terminal's host element, ahead of xterm. A paste containing a line break is handed to the guard set by `App.tsx`, which shows a confirm dialog and then calls `terminals.paste(id, text, true)`. "If unsafe" skips the dialog when the program has enabled bracketed paste (`term.modes.bracketedPasteMode`).
 - **Shortcuts** are handled in one capture-phase `keydown` listener in `App.tsx`. Modifier is ⌘ on macOS and Ctrl+Shift elsewhere. Full table in `README.md`.
 - **Data location.** `database.sqlite` in the OS app-data dir for identifier `dev.nexus-codename.desktop` (macOS: `~/Library/Application Support/dev.nexus-codename.desktop/`). Delete it to reset.
 
 ## Requirement coverage
 
-Done (PRD P0 unless noted): FR-002, 003, 004, 010–014, 020–025, 027–029, 040–044, 060–064, 110–112 (dashboard), 130, 131, 150; P1 extras: FR-133 (find in scrollback), FR-140 branch name only, FR-017 detection only (shows "missing", no relink action).
+Done (PRD P0 unless noted): FR-002, 003, 004, 010–014, 020–025, 027–029, 040–044, 060–064, 110–112 (dashboard), 130, 131, 150; multi-line paste confirmation (PRD 7.4) with an Always / If unsafe / Never policy in Settings; P1 extras: FR-133 (find in scrollback), FR-140 branch name only, FR-017 (missing folder shown, "Locate folder…" relinks it and moves session folders that were inside the old root).
 
 Partial:
 
-- FR-026 / FR-151: per-session name and colour only. No per-session font, cursor or theme.
+- FR-026 / FR-151: per-session name, colour and font size (session menu; `session.font_size`, migration 2). No per-session font family, cursor or theme.
 - FR-025: resize by mouse and keyboard, reorder tabs by drag. No pane reordering or moving a pane between tabs.
 - FR-001: builds exist but are unsigned.
 
 Not started:
 
-- P0 leftovers: multi-line paste warning (PRD 7.4), secret redaction in logs (SEC-004; there is no logging yet).
+- P0 leftovers: secret redaction in logs (SEC-004; there is no logging yet).
 - Agents: state detection (FR-065), session ID capture and resume (FR-045, FR-066), notifications (FR-067), custom agent profiles (FR-068), versioned adapter interface (FR-069). `AgentProfile` is a plain struct today, not the `AgentAdapter` port from PRD 9.2.
 - Project config `.nexus/workspace.json` and the trust flow (FR-152–156).
 - Remote: hosts, SSH, tmux persistence, metrics (FR-080–107). `Session.host` exists and is always `"local"`.
@@ -89,8 +95,8 @@ Not started:
 
 ## Suggested order of work
 
-1. Verify on macOS (list above) and fix what's wrong.
-2. Finish P0: multi-line paste confirmation, relink action for a missing folder, per-session font size.
+1. ~~Verify on macOS and fix what's wrong.~~ Done except the visual checks listed above.
+2. ~~Finish P0: multi-line paste confirmation, relink action for a missing folder, per-session font size.~~ Done.
 3. Agent awareness (PRD Phase 2): turn agent profiles into an `AgentAdapter` trait; Claude Code session ID capture and resume, and state from its hooks rather than terminal text; then notifications. This is PRD architecture gate 4 — spike it before designing the UI.
 4. Project config and trust flow.
 5. Remote hosts (PRD Phase 3): do the SSH spike first (native Rust library vs. OpenSSH subprocess, PRD 9.9), then keychain, then tmux-backed sessions.
@@ -98,6 +104,8 @@ Not started:
 
 ## Known rough edges
 
+- Menus (new session, session options, workspace options) close on an outside click but not on Escape.
+- `data-tauri-drag-region` only applies to the element that carries it, so every non-interactive child of the top bar needs the attribute.
 - No frontend tests and no end-to-end tests; `layout.ts` is pure and easy to cover first.
 - The replay ring can start mid escape sequence after 512 KB, so a re-attached view may show a brief glitch.
 - Each PTY read is sent to the UI as its own message; no batching or backpressure.

@@ -22,20 +22,33 @@ export function WorkspaceView({ workspace }: { workspace: Workspace }) {
     <div className="workspace">
       <header className="topbar" data-tauri-drag-region>
         <div className="topbar-title" data-tauri-drag-region>
-          <span className="ws-dot" style={{ background: workspace.accent }} aria-hidden />
+          <span className="ws-dot" style={{ background: workspace.accent }} aria-hidden data-tauri-drag-region />
           <strong data-tauri-drag-region>{workspace.name}</strong>
           <span className="path" data-tauri-drag-region title={workspace.rootPath}>
             {workspace.rootPath.replace(app.info.homeDir, "~")}
           </span>
           {app.gitBranch && (
-            <span className="chip" title="Git branch">
+            <span className="chip" title="Git branch" data-tauri-drag-region>
               ⎇ {app.gitBranch}
             </span>
           )}
-          <span className="chip host" title="Commands in this workspace run on this computer">
+          <span
+            className="chip host"
+            title="Commands in this workspace run on this computer"
+            data-tauri-drag-region
+          >
             Host: Local
           </span>
-          {!workspace.pathExists && <span className="chip warn">⚠ Folder not found</span>}
+          {!workspace.pathExists && (
+            <>
+              <span className="chip warn" data-tauri-drag-region>
+                ⚠ Folder not found
+              </span>
+              <button className="btn" onClick={() => app.relinkWorkspace(workspace)}>
+                Locate folder…
+              </button>
+            </>
+          )}
         </div>
         <div className="topbar-actions">
           <button
@@ -322,6 +335,7 @@ function TerminalPane({
   const st = describeState(session);
   const accent = session.accent ?? workspace.accent;
   const finding = app.findFor === session.id;
+  const paneFont = session.fontSize ?? app.fontSize;
 
   useLayoutEffect(() => {
     const host = hostRef.current!;
@@ -401,6 +415,35 @@ function TerminalPane({
                       onClick={() => app.setSessionAccent(session.id, c)}
                     />
                   ))}
+                </div>
+                <div className="menu-row" role="group" aria-label="Font size for this session">
+                  <span>Font size</span>
+                  <span className="spacer" />
+                  <button
+                    className="icon-btn"
+                    aria-label="Smaller font"
+                    disabled={paneFont <= 9}
+                    onClick={() => app.setSessionFontSize(session.id, paneFont - 1)}
+                  >
+                    −
+                  </button>
+                  <span className="menu-value">{paneFont} px</span>
+                  <button
+                    className="icon-btn"
+                    aria-label="Larger font"
+                    disabled={paneFont >= 28}
+                    onClick={() => app.setSessionFontSize(session.id, paneFont + 1)}
+                  >
+                    +
+                  </button>
+                  <button
+                    className="link"
+                    disabled={session.fontSize == null}
+                    title="Use the global font size"
+                    onClick={() => app.setSessionFontSize(session.id, null)}
+                  >
+                    Reset
+                  </button>
                 </div>
                 <button role="menuitem" className="danger" onClick={() => (setMenu(false), app.closeSession(session.id))}>
                   Close session

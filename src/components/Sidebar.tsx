@@ -109,6 +109,11 @@ export function Sidebar() {
                     >
                       {ws.pinned ? "Unpin" : "Pin to top"}
                     </button>
+                    {!ws.pathExists && (
+                      <button role="menuitem" onClick={() => (setMenuFor(null), app.relinkWorkspace(ws))}>
+                        Locate folder…
+                      </button>
+                    )}
                     <button role="menuitem" onClick={() => (setMenuFor(null), editTags(ws))}>
                       Edit tags…
                     </button>

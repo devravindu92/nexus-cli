@@ -33,6 +33,8 @@ export interface Session {
   restored: boolean;
   createdAt: number;
   closedAt: number | null;
+  /** Terminal font size override in px; null follows the global setting. */
+  fontSize: number | null;
 }
 
 export interface ShellProfile {
@@ -90,6 +92,8 @@ export const api = {
   workspaceUpdate: (workspace: Workspace) =>
     invoke<Workspace>("workspace_update", { workspace }),
   workspaceRemove: (id: string) => invoke<void>("workspace_remove", { id }),
+  workspaceRelink: (id: string, rootPath: string) =>
+    invoke<Workspace>("workspace_relink", { id, rootPath }),
   workspaceGitBranch: (id: string) =>
     invoke<string | null>("workspace_git_branch", { id }),
 
@@ -101,7 +105,13 @@ export const api = {
     invoke<Session[]>("session_list_closed", { search }),
   sessionUpdate: (
     id: string,
-    patch: { name?: string; accent?: string; clearAccent?: boolean },
+    patch: {
+      name?: string;
+      accent?: string;
+      clearAccent?: boolean;
+      fontSize?: number;
+      clearFontSize?: boolean;
+    },
   ) => invoke<Session>("session_update", { id, ...patch }),
   sessionClose: (id: string) => invoke<void>("session_close", { id }),
   sessionForget: (id: string) => invoke<void>("session_forget", { id }),

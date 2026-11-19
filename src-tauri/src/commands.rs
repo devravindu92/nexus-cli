@@ -141,6 +141,44 @@ pub fn workspace_remove(app: AppHandle, state: State<AppState>, id: String) -> C
     Ok(())
 }
 
+/// Point a workspace whose folder moved at its new location (FR-017).
+#[tauri::command]
+pub fn workspace_relink(
+    app: AppHandle,
+    state: State<AppState>,
+    id: String,
+    root_path: String,
+) -> CmdResult<Workspace> {
+    if !Path::new(&root_path).is_dir() {
+        return Err(format!("`{root_path}` is not a folder"));
+    }
+    let ws = state.db.workspace_get(&id)?;
+    if ws.root_path == root_path {
+        return Ok(ws);
+    }
+    if let Some(other) = state
+        .db
+        .workspace_list()?
+        .iter()
+        .find(|w| w.id != id && w.root_path == root_path)
+    {
+        return Err(format!(
+            "That folder is already the workspace “{}”",
+            other.name
+        ));
+    }
+    state.db.workspace_relink(&id, &ws.root_path, &root_path)?;
+    log_activity(
+        &app,
+        &state.db,
+        "workspace.relinked",
+        &format!("Workspace “{}” now points to {}", ws.name, root_path),
+        Some(&id),
+        None,
+    );
+    state.db.workspace_get(&id)
+}
+
 #[tauri::command]
 pub fn workspace_git_branch(state: State<AppState>, id: String) -> CmdResult<Option<String>> {
     let ws = state.db.workspace_get(&id)?;
@@ -281,6 +319,7 @@ pub async fn session_create(
         restored: false,
         created_at: now_ms(),
         closed_at: None,
+        font_size: None,
     };
 
     // Start first: a session that cannot launch is never persisted.
@@ -357,6 +396,8 @@ pub fn session_update(
     name: Option<String>,
     accent: Option<String>,
     clear_accent: Option<bool>,
+    font_size: Option<u16>,
+    clear_font_size: Option<bool>,
 ) -> CmdResult<Session> {
     let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
     let accent_change = if clear_accent.unwrap_or(false) {
@@ -364,9 +405,14 @@ pub fn session_update(
     } else {
         accent.as_deref().map(Some)
     };
+    let font_change = if clear_font_size.unwrap_or(false) {
+        Some(None)
+    } else {
+        font_size.map(|px| Some(px.clamp(9, 28)))
+    };
     state
         .db
-        .session_update_meta(&id, name.as_deref(), accent_change)?;
+        .session_update_meta(&id, name.as_deref(), accent_change, font_change)?;
     state.db.session_get(&id)
 }
 

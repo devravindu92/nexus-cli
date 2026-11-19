@@ -9,6 +9,7 @@ import type {
   Workspace,
 } from "./api";
 import type { SplitDir, WorkspaceLayout } from "./layout";
+import type { PastePolicy } from "./terminals";
 import type { ThemePref } from "./themes";
 
 export type Placement = "tab" | SplitDir;
@@ -27,6 +28,8 @@ export type ModalState =
       kind: "confirm";
       title: string;
       message: string;
+      /** Optional literal text shown in a monospace block (e.g. a paste preview). */
+      detail?: string;
       confirmLabel?: string;
       danger?: boolean;
       onConfirm: () => void;
@@ -49,6 +52,7 @@ export interface AppContext {
   gitBranch: string | null;
   themePref: ThemePref;
   fontSize: number;
+  pastePolicy: PastePolicy;
   focusTick: number;
   findFor: string | null;
 
@@ -56,12 +60,14 @@ export interface AppContext {
   addWorkspace: () => void;
   updateWorkspace: (ws: Workspace) => void;
   removeWorkspace: (ws: Workspace) => void;
+  relinkWorkspace: (ws: Workspace) => void;
   newSession: (spec: Omit<NewSession, "workspaceId">, placement?: Placement) => void;
   runCommandPrompt: (placement?: Placement) => void;
   closeSession: (id: string) => void;
   startSession: (id: string) => void;
   renameSession: (s: Session) => void;
   setSessionAccent: (id: string, accent: string | null) => void;
+  setSessionFontSize: (id: string, size: number | null) => void;
   restoreClosed: (s: Session) => void;
   focusSession: (id: string) => void;
   setLayout: (workspaceId: string, fn: (l: WorkspaceLayout) => WorkspaceLayout) => void;
@@ -69,6 +75,7 @@ export interface AppContext {
   setPaletteOpen: (open: boolean) => void;
   setThemePref: (pref: ThemePref) => void;
   setFontSize: (size: number) => void;
+  setPastePolicy: (policy: PastePolicy) => void;
   setFindFor: (id: string | null) => void;
   refreshAgents: () => void;
 }

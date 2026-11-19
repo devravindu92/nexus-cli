@@ -65,9 +65,12 @@ const MIGRATIONS: &[&str] = &[r#"
         workspace_id TEXT,
         session_id TEXT
     );
-    "#];
+    "#,
+    // 2: per-session terminal font size override (NULL = use the global size).
+    "ALTER TABLE session ADD COLUMN font_size INTEGER;",
+];
 
-const SESSION_COLS: &str = "id, workspace_id, name, kind, profile_id, program, args, cwd, accent, host, state, exit_code, restored, created_at, closed_at";
+const SESSION_COLS: &str = "id, workspace_id, name, kind, profile_id, program, args, cwd, accent, host, state, exit_code, restored, created_at, closed_at, font_size";
 
 fn row_to_session(r: &Row) -> rusqlite::Result<Session> {
     let args: String = r.get(6)?;
@@ -87,6 +90,7 @@ fn row_to_session(r: &Row) -> rusqlite::Result<Session> {
         restored: r.get::<_, i64>(12)? != 0,
         created_at: r.get(13)?,
         closed_at: r.get(14)?,
+        font_size: r.get(15)?,
     })
 }
 
@@ -229,6 +233,27 @@ impl Db {
         Ok(())
     }
 
+    /// Point a workspace at a new folder (FR-017). Session working directories
+    /// inside the old root move with it; anything outside is left alone.
+    pub fn workspace_relink(&self, id: &str, old_root: &str, new_root: &str) -> DbResult<()> {
+        let mut conn = self.lock();
+        let tx = conn.transaction().map_err(e)?;
+        tx.execute(
+            "UPDATE workspace SET root_path = ?2 WHERE id = ?1",
+            params![id, new_root],
+        )
+        .map_err(e)?;
+        tx.execute(
+            "UPDATE session SET cwd = ?3 || substr(cwd, length(?2) + 1)
+             WHERE workspace_id = ?1
+               AND (cwd = ?2 OR (substr(cwd, 1, length(?2)) = ?2
+                    AND substr(cwd, length(?2) + 1, 1) IN ('/', char(92))))",
+            params![id, old_root, new_root],
+        )
+        .map_err(e)?;
+        tx.commit().map_err(e)
+    }
+
     pub fn workspace_delete(&self, id: &str) -> DbResult<()> {
         self.lock()
             .execute("DELETE FROM workspace WHERE id = ?1", [id])
@@ -241,7 +266,7 @@ impl Db {
     pub fn session_insert(&self, s: &Session) -> DbResult<()> {
         self.lock()
             .execute(
-                &format!("INSERT INTO session ({SESSION_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"),
+                &format!("INSERT INTO session ({SESSION_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"),
                 params![
                     s.id,
                     s.workspace_id,
@@ -257,7 +282,8 @@ impl Db {
                     s.exit_code,
                     s.restored as i64,
                     s.created_at,
-                    s.closed_at
+                    s.closed_at,
+                    s.font_size
                 ],
             )
             .map_err(e)?;
@@ -342,6 +368,7 @@ impl Db {
         id: &str,
         name: Option<&str>,
         accent: Option<Option<&str>>,
+        font_size: Option<Option<u16>>,
     ) -> DbResult<()> {
         let conn = self.lock();
         if let Some(name) = name {
@@ -352,6 +379,13 @@ impl Db {
             conn.execute(
                 "UPDATE session SET accent = ?2 WHERE id = ?1",
                 params![id, accent],
+            )
+            .map_err(e)?;
+        }
+        if let Some(font_size) = font_size {
+            conn.execute(
+                "UPDATE session SET font_size = ?2 WHERE id = ?1",
+                params![id, font_size],
             )
             .map_err(e)?;
         }
@@ -504,6 +538,7 @@ mod tests {
             restored: false,
             created_at: 1,
             closed_at: None,
+            font_size: None,
         }
     }
 
@@ -555,5 +590,38 @@ mod tests {
         db.layout_save("w1", "a", 1).unwrap();
         db.layout_save("w1", "b", 2).unwrap();
         assert_eq!(db.layout_get("w1").unwrap().unwrap(), "b");
+    }
+
+    #[test]
+    fn font_size_override_roundtrip() {
+        let db = Db::open_in_memory().unwrap();
+        db.workspace_insert(&ws("w1")).unwrap();
+        db.session_insert(&sess("s1", "running")).unwrap();
+        assert_eq!(db.session_get("s1").unwrap().font_size, None);
+        db.session_update_meta("s1", None, None, Some(Some(16))).unwrap();
+        assert_eq!(db.session_get("s1").unwrap().font_size, Some(16));
+        db.session_update_meta("s1", Some("renamed"), None, None).unwrap();
+        assert_eq!(db.session_get("s1").unwrap().font_size, Some(16));
+        db.session_update_meta("s1", None, None, Some(None)).unwrap();
+        assert_eq!(db.session_get("s1").unwrap().font_size, None);
+    }
+
+    #[test]
+    fn relink_moves_root_and_nested_session_folders() {
+        let db = Db::open_in_memory().unwrap();
+        let mut w = ws("w1");
+        w.root_path = "/old/proj".into();
+        db.workspace_insert(&w).unwrap();
+        for (id, cwd) in [("a", "/old/proj"), ("b", "/old/proj/api"), ("c", "/old/project2"), ("d", "/elsewhere")] {
+            let mut s = sess(id, "exited");
+            s.cwd = cwd.into();
+            db.session_insert(&s).unwrap();
+        }
+        db.workspace_relink("w1", "/old/proj", "/new/place").unwrap();
+        assert_eq!(db.workspace_get("w1").unwrap().root_path, "/new/place");
+        assert_eq!(db.session_get("a").unwrap().cwd, "/new/place");
+        assert_eq!(db.session_get("b").unwrap().cwd, "/new/place/api");
+        assert_eq!(db.session_get("c").unwrap().cwd, "/old/project2");
+        assert_eq!(db.session_get("d").unwrap().cwd, "/elsewhere");
     }
 }

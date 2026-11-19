@@ -75,6 +75,7 @@ pub fn run() {
             commands::workspace_create,
             commands::workspace_update,
             commands::workspace_remove,
+            commands::workspace_relink,
             commands::workspace_git_branch,
             commands::session_create,
             commands::session_start,

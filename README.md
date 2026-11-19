@@ -17,6 +17,8 @@ Installers for macOS, Linux and Windows are built by GitHub Actions on every pus
    xattr -cr /Applications/NEXUS.app
    ```
 
+   Until you do, macOS either reports that NEXUS "is damaged and can't be opened" or the app closes the moment it starts. Running it straight from the mounted disk image does the same; copy it to Applications first.
+
 3. Open NEXUS and add a project folder.
 
 ## What works today
@@ -28,7 +30,9 @@ This is the first slice of Phase 1 (local terminal workspace).
 - Shell detection: zsh, bash, fish, nushell, PowerShell, cmd, Git Bash and WSL distributions.
 - Agent launch profiles: Claude Code, Codex, Gemini CLI, OpenCode, Cursor Agent, Copilot CLI, Aider, Goose. They use the CLI's own sign-in; NEXUS never asks for API keys.
 - Run any command directly (argument array, no shell string).
-- Per-session name and colour, searchable scrollback, dark/light/system theme, font size.
+- Per-session name, colour and font size, searchable scrollback, dark/light/system theme, global font size.
+- A confirmation before a multi-line paste reaches a terminal (Always / If unsafe / Never, in Settings).
+- A "Locate folder…" action when a project folder has moved.
 - SQLite persistence of workspaces, sessions and layouts; the last workspace and layout come back after a restart.
 - Truthful session states: Running, Exited (with code), Recoverable, Restored. Local processes end when the app quits; NEXUS says so and offers to start a new process from the saved settings.
 - Recently closed sessions (searchable) with restore, dashboard, activity feed, command palette, git branch display.
