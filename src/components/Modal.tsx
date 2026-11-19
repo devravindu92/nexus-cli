@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, Session } from "../lib/api";
-import { kindLabel, ModalState, timeAgo, useApp } from "../lib/state";
+import { canResume, kindLabel, ModalState, timeAgo, useApp } from "../lib/state";
 import { PastePolicy } from "../lib/terminals";
 import { ThemePref } from "../lib/themes";
 
@@ -141,6 +141,15 @@ function ClosedSessions() {
                   {s.closedAt ? timeAgo(s.closedAt) : ""}
                 </span>
               </span>
+              {canResume(s, app.agents) && (
+                <button
+                  className="btn"
+                  title="Start a new process and ask the agent to continue its saved conversation"
+                  onClick={() => app.restoreClosed(s, true)}
+                >
+                  Continue conversation
+                </button>
+              )}
               <button className="btn" onClick={() => app.restoreClosed(s)}>
                 Restore
               </button>

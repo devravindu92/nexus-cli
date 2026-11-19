@@ -11,7 +11,7 @@ State of the project as of 19 November 2026, written so a new session can contin
 
 ## What has and hasn't been verified
 
-Verified by running the real app on Linux (Xvfb, keyboard-driven) and by 14 Rust unit tests:
+Verified by running the real app on Linux (Xvfb, keyboard-driven) and by 22 Rust unit tests:
 
 - App start, onboarding, shell and agent detection
 - New tab, split right, split down, PTY sizing follows the pane
@@ -22,7 +22,7 @@ Verified by running the real app on Linux (Xvfb, keyboard-driven) and by 14 Rust
 
 Verified on macOS 26.3 (Apple Silicon) on 19 November 2026, by driving the dev build through the accessibility API (System Events), synthetic mouse events and checking side effects (files written by the shell, SQLite rows, child processes). No screenshots were possible, so "verified" here means behaviour, not appearance:
 
-- `cargo test` (14 tests) and `npm run build` pass locally
+- `cargo test` (22 tests) and `npm run build` pass locally
 - Window chrome: traffic lights sit at `trafficLightPosition {16, 24}`, vertically centred on the 44 px top bar (the default position was 6 px too high); the window drags by the top bar and the sidebar header; double-click on the top bar zooms
 - Menu: App / Edit / Window only; ⌘W closes the focused pane and the window stays; ⌘Q quits and no child process survives
 - ⌘T, ⌘D, ⌘⇧D; PTY size follows the pane (131x43 full, 63x20 after two splits)
@@ -43,7 +43,9 @@ Still unchecked:
 
 ```
 src-tauri/src/
-  lib.rs        app setup, state, macOS menu, kills PTYs on exit
+  main.rs       starts the app, or runs the `agent-hook` helper and exits
+  lib.rs        app setup, state, macOS menu, agent signal handling, kills PTYs on exit
+  agent.rs      AgentAdapter trait and adapters, hook helper, AgentMonitor
   commands.rs   every command the UI can call; emits session-changed / activity-changed
   pty.rs        SessionManager: owns PTYs, reader + waiter threads, 512 KB replay ring
   db.rs         SQLite (WAL, foreign keys), migrations via PRAGMA user_version
@@ -69,6 +71,10 @@ Things worth knowing before changing code:
 - **Terminals outlive components.** `terminals.ts` keeps each xterm and its DOM node in a map and re-parents the node on mount, so tab and workspace switches keep scrollback.
 - **Layout.** One JSON blob per workspace in the `layout` table, saved 250 ms after a change. `reconcile()` drops panes whose session is gone and gives unplaced sessions a tab.
 - **PATH.** `effective_path()` = login-shell PATH + inherited PATH + common install dirs, computed once. It is used to find agents and is set in every spawned process's environment.
+- **Agent adapters.** `agent.rs` defines `AgentAdapter` (`ADAPTER_API_VERSION` 1): `plan()` returns the extra launch arguments, `extract()` reduces a raw hook payload to event name, native session ID and sub-type, `interpret()` turns that into a state. Only Claude Code has a real adapter; the other seven are `LaunchOnly` and always show "State unknown".
+- **Claude Code wiring.** A new launch adds `--session-id <uuid>` (NEXUS picks the ID, so nothing is scraped and concurrent sessions cannot mix) and `--settings '{"hooks":…}'` for that launch only; the user's own Claude settings are not touched. If the user's arguments already contain `--session-id`, `--resume`/`-r` or `--continue`/`-c`, the adapter adds no session flag. "Continue conversation" launches with `--resume <id>`; it is offered only once `agent_resumable` is set, which happens on the first `UserPromptSubmit` (resuming an empty conversation fails).
+- **Signal path.** Each hook runs `nexus agent-hook claude` (the app binary; `main.rs` returns before Tauri starts, about 12 ms). It appends one line such as `{"event":"Stop","agent_session_id":"…"}` to the file named by `NEXUS_AGENT_EVENTS`, which is `agent-events/<session id>.jsonl` in the app-data dir. Prompts, tool input and output are never written. `AgentMonitor` polls those files every 250 ms, keeps the state in memory and calls back into `lib.rs`, which stores the conversation ID and emits `session-changed`. The directory is wiped at startup and each file is deleted when its process ends.
+- **State mapping** (Claude Code hook → state): `SessionStart` → Waiting for input; `UserPromptSubmit`, `PreToolUse`, `PostToolUse` → Working; `Notification` with `permission_prompt` → Needs permission, with `idle_prompt` or `elicitation_dialog` → Waiting for input; `Stop` → Finished turn. `agentState` and `agentResumed` on `Session` are runtime-only and filled in by `commands::decorate`.
 - **Paste guard.** `terminals.ts` listens for `paste` in the capture phase on each terminal's host element, ahead of xterm. A paste containing a line break is handed to the guard set by `App.tsx`, which shows a confirm dialog and then calls `terminals.paste(id, text, true)`. "If unsafe" skips the dialog when the program has enabled bracketed paste (`term.modes.bracketedPasteMode`).
 - **Shortcuts** are handled in one capture-phase `keydown` listener in `App.tsx`. Modifier is ⌘ on macOS and Ctrl+Shift elsewhere. Full table in `README.md`.
 - **Data location.** `database.sqlite` in the OS app-data dir for identifier `dev.nexus-codename.desktop` (macOS: `~/Library/Application Support/dev.nexus-codename.desktop/`). Delete it to reset.
@@ -82,11 +88,12 @@ Partial:
 - FR-026 / FR-151: per-session name, colour and font size (session menu; `session.font_size`, migration 2). No per-session font family, cursor or theme.
 - FR-025: resize by mouse and keyboard, reorder tabs by drag. No pane reordering or moving a pane between tabs.
 - FR-001: builds exist but are unsigned.
+- FR-045 / FR-065 / FR-066 / FR-069: done for Claude Code only (versioned adapter, session ID, continue conversation, state from hooks). Codex and the other six agents launch but have no state or resume wiring.
 
 Not started:
 
 - P0 leftovers: secret redaction in logs (SEC-004; there is no logging yet).
-- Agents: state detection (FR-065), session ID capture and resume (FR-045, FR-066), notifications (FR-067), custom agent profiles (FR-068), versioned adapter interface (FR-069). `AgentProfile` is a plain struct today, not the `AgentAdapter` port from PRD 9.2.
+- Agents: notifications (FR-067), custom agent profiles (FR-068).
 - Project config `.nexus/workspace.json` and the trust flow (FR-152–156).
 - Remote: hosts, SSH, tmux persistence, metrics (FR-080–107). `Session.host` exists and is always `"local"`.
 - Keychain / secret store (SEC-001–003). Nothing stores secrets yet.
@@ -97,10 +104,24 @@ Not started:
 
 1. ~~Verify on macOS and fix what's wrong.~~ Done except the visual checks listed above.
 2. ~~Finish P0: multi-line paste confirmation, relink action for a missing folder, per-session font size.~~ Done.
-3. Agent awareness (PRD Phase 2): turn agent profiles into an `AgentAdapter` trait; Claude Code session ID capture and resume, and state from its hooks rather than terminal text; then notifications. This is PRD architecture gate 4 — spike it before designing the UI.
+3. Agent awareness (PRD Phase 2, architecture gate 4). Adapter trait, Claude Code session ID / resume / hook-based state are in. Remaining:
+   - Check the in-app flow by hand if the "Agent awareness check" section below still says it is open.
+   - Notifications (FR-067) on the transitions to Needs permission and Finished turn while the window is not focused (`tauri-plugin-notification`).
+   - Codex adapter. `codex resume <SESSION_ID>` exists (codex-cli 0.156.1) and `-c notify=[…]` should give turn-complete events with the thread ID, but it could not be spiked here: on this machine every Codex turn fails with "model is not supported when using Codex with a ChatGPT account", so no event ever fired. Do not wire it from documentation alone.
+   - Custom agent profiles (FR-068).
 4. Project config and trust flow.
 5. Remote hosts (PRD Phase 3): do the SSH spike first (native Rust library vs. OpenSSH subprocess, PRD 9.9), then keychain, then tmux-backed sessions.
 6. Signing and notarisation for macOS once an Apple Developer ID is available.
+
+## Agent awareness check
+
+Spiked against Claude Code 2.1.328 on macOS with real runs (`claude -p`):
+
+- `--session-id <uuid>` is honoured and every hook reports that ID; `--resume <id>` continues the same conversation under the same ID (`SessionStart` arrives with `source: "resume"`).
+- Hooks passed through `--settings` fire alongside the user's own, and the environment of the launching process reaches the hook command.
+- With the real `nexus agent-hook claude` helper as the hook command, a run that used one tool produced `SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd`, each as a line holding only the event name and session ID.
+
+Open: the same thing inside the running app (state label changing in the pane header, tab and sidebar; "Continue conversation" after a restart) and the `permission_prompt` / `idle_prompt` notifications, which need an interactive session.
 
 ## Known rough edges
 
@@ -109,6 +130,9 @@ Not started:
 - No frontend tests and no end-to-end tests; `layout.ts` is pure and easy to cover first.
 - The replay ring can start mid escape sequence after 512 KB, so a re-attached view may show a brief glitch.
 - Each PTY read is sent to the UI as its own message; no batching or backpressure.
+- A hook is a process launch of the app binary. It is quick, but `PreToolUse`/`PostToolUse` fire for every tool call.
+- If the app binary moves while an agent is running (an update, or macOS app translocation), that agent's hooks stop reporting and its state stays at the last value.
+- The hook command is quoted for a POSIX shell; the Windows form (`"path" agent-hook claude`) is untested.
 - Agent and shell detection runs on every "new session" (`detect_shells` / `detect_agents` are not cached).
 - A database open failure at startup aborts the app with no dialog.
 - Each CI run creates a new pre-release (`build-N`); old ones are not cleaned up.

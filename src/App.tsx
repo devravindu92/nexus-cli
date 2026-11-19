@@ -391,10 +391,10 @@ export default function App() {
   );
 
   const startSession = useCallback(
-    async (id: string) => {
+    async (id: string, resume = false) => {
       const size = terminals.size(id);
       try {
-        const s = await api.sessionStart(id, size?.cols, size?.rows);
+        const s = await api.sessionStart(id, size?.cols, size?.rows, resume);
         setSessions((prev) => prev.map((p) => (p.id === s.id ? s : p)));
         bumpFocus();
       } catch (err) {
@@ -446,9 +446,9 @@ export default function App() {
   );
 
   const restoreClosed = useCallback(
-    async (closed: Session) => {
+    async (closed: Session, resume = false) => {
       try {
-        const s = await api.sessionStart(closed.id);
+        const s = await api.sessionStart(closed.id, undefined, undefined, resume);
         setSessions((prev) => (prev.some((p) => p.id === s.id) ? prev : [...prev, s]));
         setLayout(s.workspaceId, (l) => (sessionsInLayout(l).includes(s.id) ? l : addTab(l, s.id)));
         setModalState(null);

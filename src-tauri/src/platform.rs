@@ -272,31 +272,23 @@ pub fn detect_shells() -> Vec<ShellProfile> {
 
 // ---- agents ---------------------------------------------------------------
 
-/// Built-in agent launch profiles. Each uses the CLI's own authentication;
-/// NEXUS never asks for or stores provider API keys.
-const BUILTIN_AGENTS: &[(&str, &str, &str)] = &[
-    ("claude", "Claude Code", "claude"),
-    ("codex", "Codex", "codex"),
-    ("gemini", "Gemini CLI", "gemini"),
-    ("opencode", "OpenCode", "opencode"),
-    ("cursor-agent", "Cursor Agent", "cursor-agent"),
-    ("copilot", "GitHub Copilot CLI", "copilot"),
-    ("aider", "Aider", "aider"),
-    ("goose", "Goose", "goose"),
-];
-
+/// Launch profiles for the built-in agent adapters, with whether each CLI is
+/// installed.
 pub fn detect_agents() -> Vec<AgentProfile> {
-    BUILTIN_AGENTS
+    crate::agent::adapters()
         .iter()
-        .map(|(id, name, program)| {
-            let resolved = which(program);
+        .map(|adapter| {
+            let resolved = which(adapter.program());
+            let caps = adapter.capabilities();
             AgentProfile {
-                id: id.to_string(),
-                name: name.to_string(),
-                program: program.to_string(),
+                id: adapter.id().to_string(),
+                name: adapter.name().to_string(),
+                program: adapter.program().to_string(),
                 args: vec![],
                 available: resolved.is_some(),
                 resolved_path: resolved.map(|p| p.to_string_lossy().into_owned()),
+                can_resume: caps.resume,
+                reports_state: caps.state,
             }
         })
         .collect()

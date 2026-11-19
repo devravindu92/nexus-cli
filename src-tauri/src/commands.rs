@@ -1,5 +1,6 @@
 //! Typed commands exposed to the webview. This is the *only* route from the
 //! UI to process execution: there is no general-purpose shell API.
+use crate::agent::{self, AgentMonitor, LaunchContext};
 use crate::db::Db;
 use crate::models::*;
 use crate::platform;
@@ -14,6 +15,18 @@ use tauri::{AppHandle, Emitter, State};
 pub struct AppState {
     pub db: Arc<Db>,
     pub pty: SessionManager,
+    pub agents: AgentMonitor,
+}
+
+/// Add the runtime-only agent fields to a session read from the database.
+pub fn decorate(agents: &AgentMonitor, mut session: Session) -> Session {
+    if session.state == "running" {
+        if let Some(rt) = agents.runtime(&session.id) {
+            session.agent_state = rt.state.map(|s| s.as_str().to_string());
+            session.agent_resumed = rt.resumed;
+        }
+    }
+    session
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -45,6 +58,7 @@ pub fn app_info() -> AppInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         platform: std::env::consts::OS.to_string(),
         home_dir: platform::home_dir(),
+        agent_adapter_api: agent::ADAPTER_API_VERSION,
     }
 }
 
@@ -127,6 +141,7 @@ pub fn workspace_remove(app: AppHandle, state: State<AppState>, id: String) -> C
     for s in state.db.session_list_open()? {
         if s.workspace_id == id {
             state.pty.kill(&s.id);
+            state.agents.untrack(&s.id);
         }
     }
     state.db.workspace_delete(&id)?;
@@ -202,14 +217,53 @@ pub struct NewSession {
     pub rows: Option<u16>,
 }
 
+/// Spawn the process for `session`. For agents the adapter adds its own
+/// arguments (conversation ID, hooks); `resume` asks it to continue the saved
+/// conversation instead of starting a new one. Returns the agent's native
+/// conversation ID when the adapter fixed it up front.
 fn start_process(
     app: &AppHandle,
     state: &AppState,
     session: &Session,
     cols: u16,
     rows: u16,
-) -> CmdResult<()> {
-    let (program, args) = platform::resolve_launch(&session.program, &session.args)?;
+    resume: bool,
+) -> CmdResult<Option<String>> {
+    let mut args = session.args.clone();
+    let mut env = platform::terminal_env();
+    let mut agent_session_id = None;
+    let adapter = (session.kind == "agent")
+        .then(|| session.profile_id.as_deref().and_then(agent::adapter))
+        .flatten();
+    if let Some(adapter) = adapter {
+        let caps = adapter.capabilities();
+        let resume_id = (resume && caps.resume && session.agent_resumable)
+            .then_some(session.agent_session_id.as_deref())
+            .flatten();
+        let hook = caps
+            .state
+            .then(|| std::env::current_exe().ok())
+            .flatten()
+            .map(|exe| agent::hook_command(&exe, adapter.id()));
+        let plan = adapter.plan(&LaunchContext {
+            user_args: &session.args,
+            resume: resume_id,
+            hook_command: hook.as_deref(),
+        });
+        let events = state.agents.track(&session.id, adapter, plan.resumes);
+        env.push((
+            agent::EVENTS_ENV.to_string(),
+            events.to_string_lossy().into_owned(),
+        ));
+        args.extend(plan.args);
+        agent_session_id = plan.agent_session_id;
+    }
+    let untrack_on_error = |err: String| {
+        state.agents.untrack(&session.id);
+        err
+    };
+    let (program, args) =
+        platform::resolve_launch(&session.program, &args).map_err(untrack_on_error)?;
     let cwd = if Path::new(&session.cwd).is_dir() {
         session.cwd.clone()
     } else {
@@ -219,32 +273,38 @@ fn start_process(
         program,
         args,
         cwd,
-        env: platform::terminal_env(),
+        env,
         cols,
         rows,
     };
     let db = state.db.clone();
+    let agents = state.agents.clone();
     let app2 = app.clone();
     let id = session.id.clone();
     let name = session.name.clone();
     let workspace_id = session.workspace_id.clone();
-    state.pty.spawn(
-        &session.id,
-        spec,
-        Box::new(move |code| {
-            if let Ok(true) = db.session_set_exited(&id, code) {
-                let msg = match code {
-                    Some(0) | None => format!("“{name}” exited"),
-                    Some(c) => format!("“{name}” exited with code {c}"),
-                };
-                let _ = db.activity_add("session.exited", &msg, Some(&workspace_id), Some(&id));
-                let _ = app2.emit(EVENT_ACTIVITY_CHANGED, ());
-                if let Ok(s) = db.session_get(&id) {
-                    let _ = app2.emit(EVENT_SESSION_CHANGED, s);
+    state
+        .pty
+        .spawn(
+            &session.id,
+            spec,
+            Box::new(move |code| {
+                agents.untrack(&id);
+                if let Ok(true) = db.session_set_exited(&id, code) {
+                    let msg = match code {
+                        Some(0) | None => format!("“{name}” exited"),
+                        Some(c) => format!("“{name}” exited with code {c}"),
+                    };
+                    let _ = db.activity_add("session.exited", &msg, Some(&workspace_id), Some(&id));
+                    let _ = app2.emit(EVENT_ACTIVITY_CHANGED, ());
+                    if let Ok(s) = db.session_get(&id) {
+                        let _ = app2.emit(EVENT_SESSION_CHANGED, s);
+                    }
                 }
-            }
-        }),
-    )
+            }),
+        )
+        .map_err(untrack_on_error)?;
+    Ok(agent_session_id)
 }
 
 #[tauri::command]
@@ -299,7 +359,7 @@ pub async fn session_create(
         other => return Err(format!("unknown session kind `{other}`")),
     };
 
-    let session = Session {
+    let mut session = Session {
         id: uuid::Uuid::new_v4().to_string(),
         workspace_id: ws.id.clone(),
         name: input
@@ -320,18 +380,24 @@ pub async fn session_create(
         created_at: now_ms(),
         closed_at: None,
         font_size: None,
+        agent_session_id: None,
+        agent_resumable: false,
+        agent_state: None,
+        agent_resumed: false,
     };
 
     // Start first: a session that cannot launch is never persisted.
-    start_process(
+    session.agent_session_id = start_process(
         &app,
         &state,
         &session,
         input.cols.unwrap_or(80),
         input.rows.unwrap_or(24),
+        false,
     )?;
     if let Err(err) = state.db.session_insert(&session) {
         state.pty.kill(&session.id);
+        state.agents.untrack(&session.id);
         return Err(err);
     }
     log_activity(
@@ -342,11 +408,14 @@ pub async fn session_create(
         Some(&ws.id),
         Some(&session.id),
     );
-    Ok(session)
+    Ok(decorate(&state.agents, session))
 }
 
 /// Start a NEW process for an existing session record (closed, exited or
 /// recoverable). This is terminal restoration, not process reattachment.
+///
+/// With `resume`, an agent whose adapter supports it is asked to continue its
+/// saved conversation (agent continuation). That is still a new process.
 #[tauri::command]
 pub async fn session_start(
     app: AppHandle,
@@ -354,20 +423,37 @@ pub async fn session_start(
     id: String,
     cols: Option<u16>,
     rows: Option<u16>,
+    resume: Option<bool>,
 ) -> CmdResult<Session> {
     let session = state.db.session_get(&id)?;
     if state.pty.is_live(&id) {
-        return Ok(session);
+        return Ok(decorate(&state.agents, session));
     }
     let restored = session.state != "exited";
-    start_process(&app, &state, &session, cols.unwrap_or(80), rows.unwrap_or(24))?;
+    let agent_session_id = start_process(
+        &app,
+        &state,
+        &session,
+        cols.unwrap_or(80),
+        rows.unwrap_or(24),
+        resume.unwrap_or(false),
+    )?;
+    if let Some(agent_session_id) = &agent_session_id {
+        // A fresh conversation replaces the saved ID; resuming keeps it.
+        state.db.session_set_agent_session(&id, agent_session_id)?;
+    }
     state.db.session_set_running(&id, restored)?;
-    let session = state.db.session_get(&id)?;
+    let session = decorate(&state.agents, state.db.session_get(&id)?);
+    let message = if session.agent_resumed {
+        format!("“{}” started as a new process, continuing its conversation", session.name)
+    } else {
+        format!("“{}” started as a new process", session.name)
+    };
     log_activity(
         &app,
         &state.db,
         "session.restored",
-        &format!("“{}” started as a new process", session.name),
+        &message,
         Some(&session.workspace_id),
         Some(&id),
     );
@@ -376,7 +462,12 @@ pub async fn session_start(
 
 #[tauri::command]
 pub fn session_list(state: State<AppState>) -> CmdResult<Vec<Session>> {
-    state.db.session_list_open()
+    Ok(state
+        .db
+        .session_list_open()?
+        .into_iter()
+        .map(|s| decorate(&state.agents, s))
+        .collect())
 }
 
 #[tauri::command]
@@ -413,13 +504,14 @@ pub fn session_update(
     state
         .db
         .session_update_meta(&id, name.as_deref(), accent_change, font_change)?;
-    state.db.session_get(&id)
+    Ok(decorate(&state.agents, state.db.session_get(&id)?))
 }
 
 #[tauri::command]
 pub fn session_close(app: AppHandle, state: State<AppState>, id: String) -> CmdResult<()> {
     let session = state.db.session_get(&id)?;
     state.pty.kill(&id);
+    state.agents.untrack(&id);
     state.db.session_set_closed(&id, now_ms())?;
     state.db.prune_closed_sessions(200)?;
     log_activity(
@@ -436,6 +528,7 @@ pub fn session_close(app: AppHandle, state: State<AppState>, id: String) -> CmdR
 #[tauri::command]
 pub fn session_forget(state: State<AppState>, id: String) -> CmdResult<()> {
     state.pty.kill(&id);
+    state.agents.untrack(&id);
     state.db.session_delete(&id)
 }
 

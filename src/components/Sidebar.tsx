@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Workspace } from "../lib/api";
-import { describeState, kindLabel, useApp } from "../lib/state";
+import { describeAgent, describeState, kindLabel, useApp } from "../lib/state";
 import { ACCENTS } from "../lib/themes";
 
 export function Sidebar() {
@@ -152,18 +152,25 @@ export function Sidebar() {
               {active &&
                 wsSessions.map((s) => {
                   const st = describeState(s);
+                  const agent = describeAgent(s, app.agents);
                   return (
                     <button
                       key={s.id}
                       className="session-row"
                       onClick={() => app.focusSession(s.id)}
-                      title={`${kindLabel(s, app.agents)} · ${st.label}`}
+                      title={`${kindLabel(s, app.agents)} · ${st.label}${agent ? ` · ${agent.label}` : ""}`}
                     >
                       <span className={`st ${st.cls}`} aria-hidden>
                         {st.icon}
                       </span>
                       <span className="session-name">{s.name}</span>
-                      {s.kind === "agent" && <span className="agent-chip">agent</span>}
+                      {agent?.attention ? (
+                        <span className={`st ${agent.cls}`}>
+                          {agent.icon} {agent.label}
+                        </span>
+                      ) : (
+                        s.kind === "agent" && <span className="agent-chip">agent</span>
+                      )}
                       <span className="sr-only">{st.label}</span>
                     </button>
                   );

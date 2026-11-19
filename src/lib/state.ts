@@ -64,11 +64,12 @@ export interface AppContext {
   newSession: (spec: Omit<NewSession, "workspaceId">, placement?: Placement) => void;
   runCommandPrompt: (placement?: Placement) => void;
   closeSession: (id: string) => void;
-  startSession: (id: string) => void;
+  /** Start a new process; `resume` asks an agent to continue its saved conversation. */
+  startSession: (id: string, resume?: boolean) => void;
   renameSession: (s: Session) => void;
   setSessionAccent: (id: string, accent: string | null) => void;
   setSessionFontSize: (id: string, size: number | null) => void;
-  restoreClosed: (s: Session) => void;
+  restoreClosed: (s: Session, resume?: boolean) => void;
   focusSession: (id: string) => void;
   setLayout: (workspaceId: string, fn: (l: WorkspaceLayout) => WorkspaceLayout) => void;
   setModal: (m: ModalState) => void;
@@ -124,6 +125,48 @@ export function describeState(s: Session): StateInfo {
     default:
       return { label: "Closed", icon: "×", cls: "st-exited", detail: "Closed." };
   }
+}
+
+/**
+ * What a running agent is doing, from the agent CLI's own signals only.
+ * Anything NEXUS cannot know is labelled as unknown rather than guessed.
+ * Returns null for sessions that are not running agents.
+ */
+export function describeAgent(s: Session, agents: AgentProfile[]): (StateInfo & { attention: boolean }) | null {
+  if (s.kind !== "agent" || s.state !== "running") return null;
+  const profile = agents.find((a) => a.id === s.profileId);
+  const name = profile?.name ?? "This agent";
+  switch (s.agentState) {
+    case "working":
+      return { label: "Working", icon: "◐", cls: "st-restored", attention: false, detail: `${name} is working on a prompt.` };
+    case "waiting":
+      return { label: "Waiting for input", icon: "▸", cls: "st-recoverable", attention: true, detail: `${name} is waiting for you to type.` };
+    case "permission":
+      return { label: "Needs permission", icon: "⚠", cls: "st-attention", attention: true, detail: `${name} is blocked until you answer a permission prompt.` };
+    case "completed":
+      return { label: "Finished turn", icon: "✓", cls: "st-running", attention: true, detail: `${name} finished its turn and is ready for the next prompt.` };
+    default:
+      return {
+        label: "State unknown",
+        icon: "?",
+        cls: "st-exited",
+        attention: false,
+        detail:
+          profile && !profile.reportsState
+            ? `${name} gives NEXUS no reliable signal, so its state is not shown.`
+            : `No signal from ${name} yet.`,
+      };
+  }
+}
+
+/** Whether the saved conversation of a stopped agent session can be continued. */
+export function canResume(s: Session, agents: AgentProfile[]): boolean {
+  return (
+    s.kind === "agent" &&
+    s.agentResumable &&
+    !!s.agentSessionId &&
+    !!agents.find((a) => a.id === s.profileId)?.canResume
+  );
 }
 
 export function kindLabel(s: Session, agents: AgentProfile[]): string {

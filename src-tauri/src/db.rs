@@ -68,9 +68,13 @@ const MIGRATIONS: &[&str] = &[r#"
     "#,
     // 2: per-session terminal font size override (NULL = use the global size).
     "ALTER TABLE session ADD COLUMN font_size INTEGER;",
+    // 3: the agent CLI's own conversation ID, and whether that conversation
+    // has content yet (resuming an empty one fails).
+    "ALTER TABLE session ADD COLUMN agent_session_id TEXT;
+     ALTER TABLE session ADD COLUMN agent_resumable INTEGER NOT NULL DEFAULT 0;",
 ];
 
-const SESSION_COLS: &str = "id, workspace_id, name, kind, profile_id, program, args, cwd, accent, host, state, exit_code, restored, created_at, closed_at, font_size";
+const SESSION_COLS: &str = "id, workspace_id, name, kind, profile_id, program, args, cwd, accent, host, state, exit_code, restored, created_at, closed_at, font_size, agent_session_id, agent_resumable";
 
 fn row_to_session(r: &Row) -> rusqlite::Result<Session> {
     let args: String = r.get(6)?;
@@ -91,6 +95,10 @@ fn row_to_session(r: &Row) -> rusqlite::Result<Session> {
         created_at: r.get(13)?,
         closed_at: r.get(14)?,
         font_size: r.get(15)?,
+        agent_session_id: r.get(16)?,
+        agent_resumable: r.get::<_, i64>(17)? != 0,
+        agent_state: None,
+        agent_resumed: false,
     })
 }
 
@@ -266,7 +274,7 @@ impl Db {
     pub fn session_insert(&self, s: &Session) -> DbResult<()> {
         self.lock()
             .execute(
-                &format!("INSERT INTO session ({SESSION_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"),
+                &format!("INSERT INTO session ({SESSION_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)"),
                 params![
                     s.id,
                     s.workspace_id,
@@ -283,7 +291,9 @@ impl Db {
                     s.restored as i64,
                     s.created_at,
                     s.closed_at,
-                    s.font_size
+                    s.font_size,
+                    s.agent_session_id,
+                    s.agent_resumable as i64
                 ],
             )
             .map_err(e)?;
@@ -390,6 +400,31 @@ impl Db {
             .map_err(e)?;
         }
         Ok(())
+    }
+
+    /// Record the agent's native conversation ID. A different ID is a new
+    /// conversation, which starts out not resumable.
+    pub fn session_set_agent_session(&self, id: &str, agent_session_id: &str) -> DbResult<bool> {
+        let n = self
+            .lock()
+            .execute(
+                "UPDATE session SET agent_session_id = ?2, agent_resumable = 0
+                 WHERE id = ?1 AND agent_session_id IS NOT ?2",
+                params![id, agent_session_id],
+            )
+            .map_err(e)?;
+        Ok(n > 0)
+    }
+
+    pub fn session_set_agent_resumable(&self, id: &str) -> DbResult<bool> {
+        let n = self
+            .lock()
+            .execute(
+                "UPDATE session SET agent_resumable = 1 WHERE id = ?1 AND agent_resumable = 0",
+                [id],
+            )
+            .map_err(e)?;
+        Ok(n > 0)
     }
 
     pub fn session_delete(&self, id: &str) -> DbResult<()> {
@@ -539,6 +574,10 @@ mod tests {
             created_at: 1,
             closed_at: None,
             font_size: None,
+            agent_session_id: None,
+            agent_resumable: false,
+            agent_state: None,
+            agent_resumed: false,
         }
     }
 
@@ -604,6 +643,23 @@ mod tests {
         assert_eq!(db.session_get("s1").unwrap().font_size, Some(16));
         db.session_update_meta("s1", None, None, Some(None)).unwrap();
         assert_eq!(db.session_get("s1").unwrap().font_size, None);
+    }
+
+    #[test]
+    fn agent_conversation_id_and_resumable_flag() {
+        let db = Db::open_in_memory().unwrap();
+        db.workspace_insert(&ws("w1")).unwrap();
+        db.session_insert(&sess("s1", "running")).unwrap();
+        assert!(db.session_set_agent_session("s1", "conv-1").unwrap());
+        assert!(!db.session_set_agent_session("s1", "conv-1").unwrap());
+        assert!(db.session_set_agent_resumable("s1").unwrap());
+        assert!(!db.session_set_agent_resumable("s1").unwrap());
+        let s = db.session_get("s1").unwrap();
+        assert_eq!(s.agent_session_id.as_deref(), Some("conv-1"));
+        assert!(s.agent_resumable);
+        // A new conversation (e.g. /clear) is not resumable until it has content.
+        assert!(db.session_set_agent_session("s1", "conv-2").unwrap());
+        assert!(!db.session_get("s1").unwrap().agent_resumable);
     }
 
     #[test]

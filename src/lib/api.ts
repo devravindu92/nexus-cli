@@ -35,7 +35,17 @@ export interface Session {
   closedAt: number | null;
   /** Terminal font size override in px; null follows the global setting. */
   fontSize: number | null;
+  /** The agent CLI's own conversation ID, when its adapter knows it. */
+  agentSessionId: string | null;
+  /** That conversation has content, so the CLI can be asked to continue it. */
+  agentResumable: boolean;
+  /** Latest state from the agent's own signals; null means unknown. */
+  agentState: AgentState | null;
+  /** The running process was asked to continue an earlier conversation. */
+  agentResumed: boolean;
 }
+
+export type AgentState = "working" | "waiting" | "permission" | "completed";
 
 export interface ShellProfile {
   id: string;
@@ -52,6 +62,8 @@ export interface AgentProfile {
   args: string[];
   available: boolean;
   resolvedPath: string | null;
+  canResume: boolean;
+  reportsState: boolean;
 }
 
 export interface ActivityEvent {
@@ -67,6 +79,7 @@ export interface AppInfo {
   version: string;
   platform: string;
   homeDir: string;
+  agentAdapterApi: number;
 }
 
 export interface NewSession {
@@ -98,8 +111,8 @@ export const api = {
     invoke<string | null>("workspace_git_branch", { id }),
 
   sessionCreate: (input: NewSession) => invoke<Session>("session_create", { input }),
-  sessionStart: (id: string, cols?: number, rows?: number) =>
-    invoke<Session>("session_start", { id, cols, rows }),
+  sessionStart: (id: string, cols?: number, rows?: number, resume = false) =>
+    invoke<Session>("session_start", { id, cols, rows, resume }),
   sessionList: () => invoke<Session[]>("session_list"),
   sessionListClosed: (search?: string) =>
     invoke<Session[]>("session_list_closed", { search }),

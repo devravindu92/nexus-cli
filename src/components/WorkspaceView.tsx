@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Session, Workspace } from "../lib/api";
 import { emptyLayout, moveTab, PaneNode, sessionsIn, setRatio } from "../lib/layout";
-import { describeState, kindLabel, Placement, useApp } from "../lib/state";
+import { canResume, describeAgent, describeState, kindLabel, Placement, useApp } from "../lib/state";
 import { terminals } from "../lib/terminals";
 import { ACCENTS } from "../lib/themes";
 
@@ -83,6 +83,12 @@ export function WorkspaceView({ workspace }: { workspace: Workspace }) {
             const focus = byId.get(tab.focus) ?? byId.get(ids[0]);
             const accent = focus?.accent ?? workspace.accent;
             const st = focus ? describeState(focus) : null;
+            // An agent anywhere in the tab that wants the user, most urgent first.
+            const wants = ids
+              .map((id) => byId.get(id))
+              .map((s) => (s ? describeAgent(s, app.agents) : null))
+              .filter((a) => a?.attention)
+              .sort((a, b) => Number(b!.cls === "st-attention") - Number(a!.cls === "st-attention"))[0];
             return (
               <div
                 key={tab.id}
@@ -110,6 +116,11 @@ export function WorkspaceView({ workspace }: { workspace: Workspace }) {
                   </span>
                 )}
                 <span className="tab-name">{focus?.name ?? "Session"}</span>
+                {wants && (
+                  <span className={`st ${wants.cls}`} title={wants.detail}>
+                    {wants.icon} <span className="st-label">{wants.label}</span>
+                  </span>
+                )}
                 {ids.length > 1 && <span className="tab-count">{ids.length}</span>}
                 {index < 9 && <kbd>{k("⌘", "Alt+")}{index + 1}</kbd>}
               </div>
@@ -336,6 +347,8 @@ function TerminalPane({
   const accent = session.accent ?? workspace.accent;
   const finding = app.findFor === session.id;
   const paneFont = session.fontSize ?? app.fontSize;
+  const agent = describeAgent(session, app.agents);
+  const resumable = canResume(session, app.agents);
 
   useLayoutEffect(() => {
     const host = hostRef.current!;
@@ -384,6 +397,19 @@ function TerminalPane({
           {session.kind === "agent" ? "✦ " : ""}
           {kindLabel(session, app.agents)}
         </span>
+        {agent && (
+          <span className={`st ${agent.cls}`} title={agent.detail}>
+            {agent.icon} <span className="st-label">{agent.label}</span>
+          </span>
+        )}
+        {session.state === "running" && session.agentResumed && (
+          <span
+            className="chip"
+            title="A new process that asked the agent to continue the saved conversation. The earlier process was not reattached."
+          >
+            Conversation continued
+          </span>
+        )}
         <span className="spacer" />
         <div className="menu-anchor">
           <button className="icon-btn" aria-label="Session options" onClick={() => setMenu((v) => !v)}>
@@ -511,9 +537,24 @@ function TerminalPane({
               <code className="cmdline">
                 {[session.program.split(/[\\/]/).pop(), ...session.args].join(" ")}
               </code>
+              {resumable && (
+                <p>
+                  {kindLabel(session, app.agents)} saved this conversation itself. “Continue conversation”
+                  starts a new process and asks it to reopen that conversation; the old process is not
+                  brought back.
+                </p>
+              )}
               <div className="overlay-actions">
-                <button className="btn primary" onClick={() => app.startSession(session.id)}>
-                  Start as new process
+                {resumable && (
+                  <button className="btn primary" onClick={() => app.startSession(session.id, true)}>
+                    Continue conversation
+                  </button>
+                )}
+                <button
+                  className={`btn ${resumable ? "" : "primary"}`}
+                  onClick={() => app.startSession(session.id)}
+                >
+                  {resumable ? "Start fresh" : "Start as new process"}
                 </button>
                 <button className="btn" onClick={() => app.closeSession(session.id)}>
                   Close

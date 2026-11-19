@@ -1,4 +1,5 @@
 //! NEXUS desktop core.
+mod agent;
 mod commands;
 mod db;
 mod models;
@@ -8,7 +9,12 @@ mod pty;
 use commands::AppState;
 use std::sync::Arc;
 use tauri::menu::{MenuBuilder, PredefinedMenuItem, SubmenuBuilder};
-use tauri::{Manager, RunEvent};
+use tauri::{Emitter, Manager, RunEvent};
+
+/// `nexus agent-hook <adapter>`: see [`agent::run_hook`].
+pub fn run_agent_hook(adapter_id: &str) {
+    agent::run_hook(adapter_id);
+}
 
 /// macOS needs an application menu for standard shortcuts (copy/paste, quit).
 /// "Close Window" is deliberately absent so Cmd+W reaches the app and closes
@@ -53,9 +59,37 @@ pub fn run() {
             let db = db::Db::open(&data_dir.join("database.sqlite"))?;
             // No local process survives an app exit: be truthful about it.
             db.mark_orphans_recoverable()?;
+            let db = Arc::new(db);
+            let agents = agent::AgentMonitor::new(data_dir.join("agent-events"));
+            {
+                // Agent signals -> database (conversation ID) and UI (state).
+                let db = db.clone();
+                let monitor = agents.clone();
+                let handle = app.handle().clone();
+                agents.start(Box::new(move |id, signal, state_changed| {
+                    let mut changed = state_changed;
+                    if let Some(agent_session_id) = &signal.agent_session_id {
+                        changed |= db
+                            .session_set_agent_session(id, agent_session_id)
+                            .unwrap_or(false);
+                    }
+                    if signal.resumable {
+                        changed |= db.session_set_agent_resumable(id).unwrap_or(false);
+                    }
+                    if changed {
+                        if let Ok(session) = db.session_get(id) {
+                            let _ = handle.emit(
+                                commands::EVENT_SESSION_CHANGED,
+                                commands::decorate(&monitor, session),
+                            );
+                        }
+                    }
+                }));
+            }
             app.manage(AppState {
-                db: Arc::new(db),
+                db,
                 pty: pty::SessionManager::new(),
+                agents,
             });
             // Resolve the login-shell PATH off the main thread.
             std::thread::spawn(|| {

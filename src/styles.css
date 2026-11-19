@@ -132,6 +132,7 @@ kbd {
 .st-exited { color: var(--faint); }
 .st-failed { color: var(--bad); }
 .st-recoverable { color: var(--warn); }
+.st-attention { color: var(--bad); font-weight: 600; }
 
 /* ---- main / topbar ---- */
 .main { flex: 1; min-width: 0; display: flex; }

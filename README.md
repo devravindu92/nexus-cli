@@ -34,10 +34,11 @@ This is the first slice of Phase 1 (local terminal workspace).
 - A confirmation before a multi-line paste reaches a terminal (Always / If unsafe / Never, in Settings).
 - A "Locate folder…" action when a project folder has moved.
 - SQLite persistence of workspaces, sessions and layouts; the last workspace and layout come back after a restart.
+- Claude Code awareness from its own hooks, never from terminal text: Working, Waiting for input, Needs permission, Finished turn. After a restart a Claude Code session can continue its saved conversation in a new process. Other agents show "State unknown".
 - Truthful session states: Running, Exited (with code), Recoverable, Restored. Local processes end when the app quits; NEXUS says so and offers to start a new process from the saved settings.
 - Recently closed sessions (searchable) with restore, dashboard, activity feed, command palette, git branch display.
 
-Not built yet: agent attention detection (shown as Unknown), agent conversation resume, remote hosts and SSH, project config file and trust flow, notifications, multi-window, auto-update, signing/notarisation, web and cloud sync.
+Not built yet: state and resume for agents other than Claude Code, notifications, remote hosts and SSH, project config file and trust flow, multi-window, auto-update, signing/notarisation, web and cloud sync.
 
 ## Shortcuts
 

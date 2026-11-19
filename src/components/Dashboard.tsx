@@ -1,10 +1,22 @@
-import { describeState, kindLabel, timeAgo, useApp } from "../lib/state";
+import { describeAgent, describeState, kindLabel, timeAgo, useApp } from "../lib/state";
 
 export function Dashboard() {
   const app = useApp();
   const running = app.sessions.filter((s) => s.state === "running");
   const agentsRunning = running.filter((s) => s.kind === "agent");
   const notRunning = app.sessions.filter((s) => s.state !== "running");
+  const agentInfo = agentsRunning.map((s) => describeAgent(s, app.agents));
+  const wantYou = agentInfo.filter((a) => a?.attention).length;
+  const unknown = agentInfo.filter((a) => a?.label === "State unknown").length;
+  const agentNote =
+    agentsRunning.length === 0
+      ? "No agents running"
+      : [
+          wantYou > 0 ? `${wantYou} waiting for you` : "None waiting for you",
+          unknown > 0 ? `${unknown} with unknown state` : "",
+        ]
+          .filter(Boolean)
+          .join(" · ");
   const wsName = (id: string) => app.workspaces.find((w) => w.id === id)?.name ?? "—";
 
   return (
@@ -28,7 +40,7 @@ export function Dashboard() {
           <Card
             label="Agent sessions"
             value={agentsRunning.length}
-            note="Attention state: Unknown (no reliable signal yet)"
+            note={agentNote}
           />
         </div>
 
@@ -57,9 +69,9 @@ export function Dashboard() {
             <h3>Sessions</h3>
             {app.sessions.length === 0 && <p className="empty-hint">No open sessions.</p>}
             {app.sessions.map((s) => {
-              const st = describeState(s);
+              const st = describeAgent(s, app.agents) ?? describeState(s);
               return (
-                <button key={s.id} className="row" onClick={() => app.focusSession(s.id)}>
+                <button key={s.id} className="row" onClick={() => app.focusSession(s.id)} title={st.detail}>
                   <span className={`st ${st.cls}`} aria-hidden>
                     {st.icon}
                   </span>

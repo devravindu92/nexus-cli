@@ -48,6 +48,18 @@ pub struct Session {
     pub closed_at: Option<i64>,
     /// Terminal font size override in px; `None` follows the global setting.
     pub font_size: Option<u16>,
+    /// The agent CLI's own conversation ID, when its adapter knows it.
+    pub agent_session_id: Option<String>,
+    /// That conversation has content, so the CLI can be asked to continue it.
+    pub agent_resumable: bool,
+    /// Runtime only: latest state from the agent's own signals
+    /// ("working" | "waiting" | "permission" | "completed"). `None` = unknown.
+    #[serde(default)]
+    pub agent_state: Option<String>,
+    /// Runtime only: the running process was asked to continue an earlier
+    /// conversation (agent continuation - not process reattachment).
+    #[serde(default)]
+    pub agent_resumed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +81,10 @@ pub struct AgentProfile {
     pub args: Vec<String>,
     pub available: bool,
     pub resolved_path: Option<String>,
+    /// The adapter can continue an earlier conversation by its native ID.
+    pub can_resume: bool,
+    /// The adapter reports working / waiting / permission state.
+    pub reports_state: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +104,8 @@ pub struct AppInfo {
     pub version: String,
     pub platform: String,
     pub home_dir: String,
+    /// Version of the agent adapter contract this build implements (FR-069).
+    pub agent_adapter_api: u32,
 }
 
 pub fn now_ms() -> i64 {
