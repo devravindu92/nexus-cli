@@ -5,7 +5,7 @@ State of the project as of 19 November 2026 (after the second cloud session, whi
 ## Where things are
 
 - Repo: `devravindu92/nexus-cli`, branch `claude/pensive-franklin-fbguni` (the only branch; there is no `main` yet).
-- Every push that touches non-Markdown files builds installers and publishes a pre-release `build-N`. `build-3` is the last build the owner tested on macOS (commit `9525a5f`); everything under "Added in the second cloud session" below is newer and has not been opened on a Mac. List builds with `gh release list`.
+- Every push that touches non-Markdown files builds installers and publishes a pre-release `build-N`. `build-3` is the last build the owner tested on macOS (commit `9525a5f`). `build-5` is the latest and contains everything described here; the owner installed it on 19 November 2026 and was stopped by Gatekeeper (see "macOS signing and notarisation"), so nothing added since `build-3` has been exercised on a Mac yet. List builds with `gh release list`.
 - The macOS build is unsigned and not notarised. It must be copied to Applications and cleared with `xattr -cr /Applications/NEXUS.app`, otherwise macOS kills it at launch.
 - Spec: `docs/PRD.md`. What exists: PRD Phase 1 (local terminal workspace), Phase 2 for Claude Code (agent awareness, notifications, project config and trust), Phase 3 (remote machines over SSH with tmux persistence and metrics) apart from the items under "Requirement coverage", and a resource-use view the owner asked for. Phase 4 (web app and cloud sync) is not started.
 
@@ -54,7 +54,7 @@ Verified on macOS 26.3 (Apple Silicon) on 19 November 2026, by driving the dev b
 
 ### Added in the second cloud session (Linux only)
 
-Verified by running the real app under Xvfb and by unit tests (41 Rust tests):
+Verified by running the real app under Xvfb and by unit tests (45 Rust tests, plus 3 for the cloud service):
 
 - Database migration from schema 1 straight to 4 on an existing database.
 - Remote machine dialog: add, save, the sidebar and dashboard lists. A real `ssh` probe to a closed port is reported as "Unreachable" with SSH's own message, in the dashboard and the sidebar.
@@ -151,6 +151,28 @@ Verified: the server's routes with curl against the live deployment (sign-up cod
 
 Not built (PRD 5.7): live terminal access from the browser and the session broker, the remote connector, two-way sync with conflicts, editing from the web, session expiry controls beyond the fixed 14 days, step-up confirmation, multi-user sharing. Rate limits are in memory, so they reset on restart and assume one instance.
 
+## macOS signing and notarisation (next job for a local Mac session)
+
+**Why:** release builds are ad-hoc signed (`"signingIdentity": "-"` in `src-tauri/tauri.conf.json`) and not notarised. On the owner's Mac (19 November 2026, `build-5`) opening the app shows "“NEXUS” Not Opened — Apple could not verify “NEXUS” is free of malware", with only Done / Move to Bin. The workaround is `xattr -cr /Applications/NEXUS.app`. The owner has an Apple developer account signed in to Xcode and wants this done properly. None of the following has been tried; it can only be done and checked on a Mac.
+
+**What is needed from Apple**
+
+- A **Developer ID Application** certificate. This requires paid Apple Developer Program membership ($99/year); a free Apple ID in Xcode can only make development certificates, which do not satisfy Gatekeeper. Check first with `security find-identity -v -p codesigning`: a usable line reads `Developer ID Application: <Name> (<TEAMID>)`. If it is missing and the account is a paid one, create it in Xcode → Settings → Accounts → Manage Certificates → + → Developer ID Application.
+- Notarisation credentials: either an app-specific password for the Apple ID (appleid.apple.com → Sign-In and Security → App-Specific Passwords) plus the Team ID, or an App Store Connect API key. Store them with `xcrun notarytool store-credentials` for local use. **Never commit these or paste them into chat or docs.**
+
+**Steps**
+
+1. Confirm the certificate exists (above). If the account is not in the paid programme, stop and tell the owner: nothing below can work, and the `xattr` step stays.
+2. Make the signing identity come from the environment instead of the config: remove `"signingIdentity": "-"` from `tauri.conf.json` so `APPLE_SIGNING_IDENTITY` is used when set. Keep an ad-hoc fallback for CI runs that have no secrets (Apple Silicon will not run an unsigned binary at all), for example by setting `APPLE_SIGNING_IDENTITY=-` in the workflow only when the secret is empty.
+3. Build locally with the identity and notarisation variables Tauri reads (`APPLE_SIGNING_IDENTITY`, and `APPLE_ID` + `APPLE_PASSWORD` + `APPLE_TEAM_ID`, or `APPLE_API_ISSUER` + `APPLE_API_KEY` + `APPLE_API_KEY_PATH`): `npm run tauri build -- --target universal-apple-darwin`. Check the current Tauri 2 macOS signing guide rather than relying on memory.
+4. Hardened runtime is required for notarisation. Check whether NEXUS needs an entitlements file: it spawns child processes through a PTY, loads a WKWebView, runs itself as the `agent-hook` helper, uses the keychain and sends notifications. Add only the entitlements that prove necessary, with a comment on each.
+5. Verify, on the built `.dmg` and the app inside it: `codesign --verify --deep --strict --verbose=2`, `spctl -a -vvv -t install`, `xcrun stapler validate`. Then the real test: download the `.dmg` through a browser (so it carries the quarantine flag), install it, and open it by double-click with **no** `xattr` step.
+6. Re-check, in the signed app, everything that depends on identity or the hardened runtime: terminals start, Claude Code launches and its state labels still update (the hook runs the app binary), "Continue conversation", an SSH session, notifications, and linking the web companion (first real keychain use; note what prompt appears).
+7. CI: add repository secrets `APPLE_CERTIFICATE` (base64 of the exported `.p12`), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`, and pass them to `tauri-apps/tauri-action` in `.github/workflows/build.yml` for the macOS job. The owner has to add the secrets in GitHub (Settings → Secrets and variables → Actions); a session can give exact `gh secret set` commands but must not handle the values in chat. Builds must still succeed, ad-hoc signed, when the secrets are absent.
+8. Afterwards: remove the `xattr` instructions from `README.md`, the release body in `build.yml` and `CLAUDE.md`; record what was verified here.
+
+**Related, not part of this job:** the bundle identifier is still the placeholder `dev.nexus-codename.desktop`. Changing it later moves the app-data folder and the keychain entry, so settle the product name and identifier before the first signed public release, but do not change it as a side effect of signing. Windows signing and auto-update are separate (see the research document's notes: Azure Artifact Signing is limited by country, SignPath Foundation is free for open source).
+
 ## Requirement coverage
 
 Done (PRD P0 unless noted): FR-002, 003, 004, 010–014, 020–025, 027–029, 040–044, 060–064, dashboard 110–112, 130, 131, 150; multi-line paste confirmation (PRD 7.4). P1/P2 done: FR-005 / FR-157 (settings export and import), FR-017 (relink), FR-018 / FR-093 (remote folder per workspace and machine), FR-050 in part (scrollback size setting), FR-067 / FR-120–123 (notifications with per-kind switches; see "Not verified"), FR-068 (custom agents), FR-080–083, FR-085, FR-087–092, FR-094–098, FR-101–105 (remote machines; see "Not verified"), FR-084 (agent forwarding, opt-in with a warning), FR-086 (host keys: left entirely to OpenSSH, changed keys reported and never bypassed), FR-133, FR-152–156 (project config and trust), dashboard FR-113–117 in part.
@@ -177,6 +199,7 @@ Not started:
 
 ## Suggested order of work
 
+0. **Sign and notarise the macOS build** (section "macOS signing and notarisation"). The owner hit the Gatekeeper block on `build-5` and has an Apple developer account ready.
 1. **Try a real remote machine from a Mac** (see "Not verified"): connection test, a shell, a durable session (disconnect Wi-Fi, reattach), close with "Detach" and with "End remote session", a password-protected key, a machine with a new host key. Fix what turns up. This is the largest unproven area.
 2. Check a notification actually appears on macOS, and the new screens in light theme.
 3. Memory (owner priority). Scrollback now defaults to 5,000 lines (was 10,000) and is a setting. Still to do: profile the app process, and consider disposing xterm instances of workspaces that are not on screen.
