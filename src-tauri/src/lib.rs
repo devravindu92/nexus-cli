@@ -5,6 +5,7 @@ mod db;
 mod models;
 mod platform;
 mod pty;
+mod usage;
 
 use commands::AppState;
 use std::sync::Arc;
@@ -90,6 +91,7 @@ pub fn run() {
                 db,
                 pty: pty::SessionManager::new(),
                 agents,
+                usage: Default::default(),
             });
             // Resolve the login-shell PATH off the main thread.
             std::thread::spawn(|| {
@@ -118,6 +120,7 @@ pub fn run() {
             commands::session_update,
             commands::session_close,
             commands::session_forget,
+            commands::usage_snapshot,
             commands::terminal_subscribe,
             commands::terminal_write,
             commands::terminal_resize,

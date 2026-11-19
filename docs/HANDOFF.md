@@ -11,7 +11,7 @@ State of the project as of 19 November 2026, written so a new session can contin
 
 ## What has and hasn't been verified
 
-Verified by running the real app on Linux (Xvfb, keyboard-driven) and by 22 Rust unit tests:
+Verified by running the real app on Linux (Xvfb, keyboard-driven) and by 26 Rust unit tests:
 
 - App start, onboarding, shell and agent detection
 - New tab, split right, split down, PTY sizing follows the pane
@@ -22,7 +22,7 @@ Verified by running the real app on Linux (Xvfb, keyboard-driven) and by 22 Rust
 
 Verified on macOS 26.3 (Apple Silicon) on 19 November 2026, by driving the dev build through the accessibility API (System Events), synthetic mouse events and checking side effects (files written by the shell, SQLite rows, child processes). No screenshots were possible, so "verified" here means behaviour, not appearance:
 
-- `cargo test` (22 tests) and `npm run build` pass locally
+- `cargo test` (26 tests) and `npm run build` pass locally
 - Window chrome: traffic lights sit at `trafficLightPosition {16, 24}`, vertically centred on the 44 px top bar (the default position was 6 px too high); the window drags by the top bar and the sidebar header; double-click on the top bar zooms
 - Menu: App / Edit / Window only; ⌘W closes the focused pane and the window stays; ⌘Q quits and no child process survives
 - ⌘T, ⌘D, ⌘⇧D; PTY size follows the pane (131x43 full, 63x20 after two splits)
@@ -46,6 +46,7 @@ src-tauri/src/
   main.rs       starts the app, or runs the `agent-hook` helper and exits
   lib.rs        app setup, state, macOS menu, agent signal handling, kills PTYs on exit
   agent.rs      AgentAdapter trait and adapters, hook helper, AgentMonitor
+  usage.rs      memory / CPU per session process tree and for NEXUS itself (sysinfo)
   commands.rs   every command the UI can call; emits session-changed / activity-changed
   pty.rs        SessionManager: owns PTYs, reader + waiter threads, 512 KB replay ring
   db.rs         SQLite (WAL, foreign keys), migrations via PRAGMA user_version
@@ -75,6 +76,8 @@ Things worth knowing before changing code:
 - **Claude Code wiring.** A new launch adds `--session-id <uuid>` (NEXUS picks the ID, so nothing is scraped and concurrent sessions cannot mix) and `--settings '{"hooks":…}'` for that launch only; the user's own Claude settings are not touched. If the user's arguments already contain `--session-id`, `--resume`/`-r` or `--continue`/`-c`, the adapter adds no session flag. "Continue conversation" launches with `--resume <id>`; it is offered only once `agent_resumable` is set, which happens on the first `UserPromptSubmit` (resuming an empty conversation fails).
 - **Signal path.** Each hook runs `nexus agent-hook claude` (the app binary; `main.rs` returns before Tauri starts, about 12 ms). It appends one line such as `{"event":"Stop","agent_session_id":"…"}` to the file named by `NEXUS_AGENT_EVENTS`, which is `agent-events/<session id>.jsonl` in the app-data dir. Prompts, tool input and output are never written. `AgentMonitor` polls those files every 250 ms, keeps the state in memory and calls back into `lib.rs`, which stores the conversation ID and emits `session-changed`. The directory is wiped at startup and each file is deleted when its process ends.
 - **State mapping** (Claude Code hook → state): `SessionStart` → Waiting for input; `UserPromptSubmit`, `PreToolUse`, `PostToolUse` → Working; `Notification` with `permission_prompt` → Needs permission, with `idle_prompt` or `elicitation_dialog` → Waiting for input; `Stop` → Finished turn. `agentState` and `agentResumed` on `Session` are runtime-only and filled in by `commands::decorate`.
+- **Resource use.** `usage_snapshot` is called by the dashboard every 3 s while it is mounted and the window is visible; nothing is sampled otherwise. For each live session it sums the root PID (`pty.rs` keeps it) and all descendants, and names the terminal's foreground process (`MasterPty::process_group_leader`, Unix only). "NEXUS itself" is the app's own tree minus the terminals, plus on macOS the WebKit helper processes the OS holds it responsible for (`responsibility_get_pid_responsible_for_pid`, a private libSystem call; when it finds nothing the row says the web view is not counted). The agent row shows the user's command, not the session and hook flags NEXUS appends.
+- **Terminal environment.** `platform::terminal_env_remove()` drops the variables that mark a process as living inside another Claude Code session (`CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, …). Without that, a NEXUS started from a Claude Code terminal made every Claude Code inside it a "child session" that keeps no transcript, so resume failed with "No conversation found".
 - **Paste guard.** `terminals.ts` listens for `paste` in the capture phase on each terminal's host element, ahead of xterm. A paste containing a line break is handed to the guard set by `App.tsx`, which shows a confirm dialog and then calls `terminals.paste(id, text, true)`. "If unsafe" skips the dialog when the program has enabled bracketed paste (`term.modes.bracketedPasteMode`).
 - **Shortcuts** are handled in one capture-phase `keydown` listener in `App.tsx`. Modifier is ⌘ on macOS and Ctrl+Shift elsewhere. Full table in `README.md`.
 - **Data location.** `database.sqlite` in the OS app-data dir for identifier `dev.nexus-codename.desktop` (macOS: `~/Library/Application Support/dev.nexus-codename.desktop/`). Delete it to reset.
@@ -88,6 +91,7 @@ Partial:
 - FR-026 / FR-151: per-session name, colour and font size (session menu; `session.font_size`, migration 2). No per-session font family, cursor or theme.
 - FR-025: resize by mouse and keyboard, reorder tabs by drag. No pane reordering or moving a pane between tabs.
 - FR-001: builds exist but are unsigned.
+- Resource use (asked for by the owner, beyond the PRD's local scope): dashboard table of memory, CPU, process count and foreground command per running session with a Close button, plus NEXUS's own footprint. No history, no alerts, no per-pane display.
 - FR-045 / FR-065 / FR-066 / FR-069: done for Claude Code only (versioned adapter, session ID, continue conversation, state from hooks). Codex and the other six agents launch but have no state or resume wiring.
 
 Not started:
@@ -105,7 +109,6 @@ Not started:
 1. ~~Verify on macOS and fix what's wrong.~~ Done except the visual checks listed above.
 2. ~~Finish P0: multi-line paste confirmation, relink action for a missing folder, per-session font size.~~ Done.
 3. Agent awareness (PRD Phase 2, architecture gate 4). Adapter trait, Claude Code session ID / resume / hook-based state are in. Remaining:
-   - Check the in-app flow by hand if the "Agent awareness check" section below still says it is open.
    - Notifications (FR-067) on the transitions to Needs permission and Finished turn while the window is not focused (`tauri-plugin-notification`).
    - Codex adapter. `codex resume <SESSION_ID>` exists (codex-cli 0.156.1) and `-c notify=[…]` should give turn-complete events with the thread ID, but it could not be spiked here: on this machine every Codex turn fails with "model is not supported when using Codex with a ChatGPT account", so no event ever fired. Do not wire it from documentation alone.
    - Custom agent profiles (FR-068).
@@ -121,7 +124,13 @@ Spiked against Claude Code 2.1.328 on macOS with real runs (`claude -p`):
 - Hooks passed through `--settings` fire alongside the user's own, and the environment of the launching process reaches the hook command.
 - With the real `nexus agent-hook claude` helper as the hook command, a run that used one tool produced `SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd`, each as a line holding only the event name and session ID.
 
-Open: the same thing inside the running app (state label changing in the pane header, tab and sidebar; "Continue conversation" after a restart) and the `permission_prompt` / `idle_prompt` notifications, which need an interactive session.
+Checked inside the running app on macOS: a Claude Code session started from NEXUS gets `--session-id` and the hooks; the label goes Waiting for input → Finished turn after a prompt, in the pane header, tab and sidebar; after ⌘Q and a relaunch, "Continue conversation" starts `claude --resume <id>`, the hook reports `source: "resume"` and the pane shows "Conversation continued".
+
+Open: the Working and Needs permission labels were not observed live (the test prompt finished too quickly and used no tool), nor were the `permission_prompt` / `idle_prompt` notifications.
+
+## Memory baseline
+
+Release build on macOS 26.3 (Apple Silicon), opened from the bundle, dashboard showing, no terminal running: about 300 MB in total, of which about 125 MB is the app process and the rest is the WebKit helper processes. Not yet profiled. Things to look at first if this needs to come down: each xterm keeps 10,000 lines of scrollback in the web view, every session keeps a 512 KB replay ring in the core, and terminals of hidden tabs and workspaces stay alive.
 
 ## Known rough edges
 

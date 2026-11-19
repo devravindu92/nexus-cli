@@ -20,6 +20,8 @@ pub struct SpawnSpec {
     pub args: Vec<String>,
     pub cwd: String,
     pub env: Vec<(String, String)>,
+    /// Inherited variables the new process must not see.
+    pub env_remove: Vec<String>,
     pub cols: u16,
     pub rows: u16,
 }
@@ -31,6 +33,8 @@ struct Output {
 
 struct Runtime {
     run_id: u64,
+    /// OS process ID of the program started in the PTY, when known.
+    pid: Option<u32>,
     writer: Mutex<Box<dyn Write + Send>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
@@ -84,6 +88,9 @@ impl SessionManager {
         let mut cmd = CommandBuilder::new(&spec.program);
         cmd.args(&spec.args);
         cmd.cwd(&spec.cwd);
+        for k in &spec.env_remove {
+            cmd.env_remove(k);
+        }
         for (k, v) in &spec.env {
             cmd.env(k, v);
         }
@@ -104,6 +111,7 @@ impl SessionManager {
             .take_writer()
             .map_err(|e| format!("terminal writer error: {e}"))?;
         let killer = child.clone_killer();
+        let pid = child.process_id();
 
         let output = Arc::new(Mutex::new(Output {
             ring: VecDeque::with_capacity(8192),
@@ -112,6 +120,7 @@ impl SessionManager {
         let run_id = self.inner.next_run.fetch_add(1, Ordering::Relaxed) + 1;
         let runtime = Arc::new(Runtime {
             run_id,
+            pid,
             writer: Mutex::new(writer),
             master: Mutex::new(pair.master),
             killer: Mutex::new(killer),
@@ -180,6 +189,29 @@ impl SessionManager {
         lock(&self.inner.map).keys().cloned().collect()
     }
 
+    /// For every live session: the PID of its root process and, where the OS
+    /// can tell us, the PID leading the terminal's foreground process group
+    /// (the program currently in control of the terminal).
+    pub fn process_ids(&self) -> Vec<(String, u32, Option<u32>)> {
+        let runtimes: Vec<(String, Arc<Runtime>)> = lock(&self.inner.map)
+            .iter()
+            .map(|(id, rt)| (id.clone(), rt.clone()))
+            .collect();
+        runtimes
+            .into_iter()
+            .filter_map(|(id, rt)| {
+                let root = rt.pid?;
+                #[cfg(unix)]
+                let foreground = lock(&rt.master)
+                    .process_group_leader()
+                    .and_then(|p| u32::try_from(p).ok());
+                #[cfg(not(unix))]
+                let foreground = None;
+                Some((id, root, foreground))
+            })
+            .collect()
+    }
+
     pub fn write(&self, id: &str, data: &[u8]) -> Result<(), String> {
         let rt = self.get(id).ok_or("session is not running")?;
         let mut w = lock(&rt.writer);
@@ -244,6 +276,7 @@ mod tests {
             args: vec!["-c".into(), script.into()],
             cwd: "/".into(),
             env: vec![("TERM".into(), "xterm-256color".into())],
+            env_remove: vec![],
             cols: 80,
             rows: 24,
         }

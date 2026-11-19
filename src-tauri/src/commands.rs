@@ -16,6 +16,7 @@ pub struct AppState {
     pub db: Arc<Db>,
     pub pty: SessionManager,
     pub agents: AgentMonitor,
+    pub usage: std::sync::Mutex<crate::usage::UsageSampler>,
 }
 
 /// Add the runtime-only agent fields to a session read from the database.
@@ -274,6 +275,7 @@ fn start_process(
         args,
         cwd,
         env,
+        env_remove: platform::terminal_env_remove(),
         cols,
         rows,
     };
@@ -554,6 +556,15 @@ pub fn terminal_write(state: State<AppState>, id: String, data: String) -> CmdRe
 #[tauri::command]
 pub fn terminal_resize(state: State<AppState>, id: String, cols: u16, rows: u16) -> CmdResult<()> {
     state.pty.resize(&id, cols, rows)
+}
+
+/// Memory and CPU of every running session's process tree, and of NEXUS
+/// itself. Sampled on request only.
+#[tauri::command]
+pub async fn usage_snapshot(state: State<'_, AppState>) -> CmdResult<crate::usage::UsageSnapshot> {
+    let sessions = state.pty.process_ids();
+    let mut sampler = state.usage.lock().unwrap_or_else(|p| p.into_inner());
+    Ok(sampler.snapshot(&sessions))
 }
 
 // ---- layout, preferences, activity ---------------------------------------

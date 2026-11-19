@@ -159,6 +159,29 @@ pub fn terminal_env() -> Vec<(String, String)> {
     env
 }
 
+/// Variables that mark a process as running inside another agent session.
+/// A NEXUS terminal is a top-level terminal, so they must not leak in when
+/// NEXUS itself was started from such a session: Claude Code, for one, treats
+/// itself as a nested child and does not keep a resumable conversation.
+const PARENT_AGENT_ENV: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_PID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_CHILD_NOTES_DIR",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+];
+
+/// Inherited variables removed from every terminal's environment.
+pub fn terminal_env_remove() -> Vec<String> {
+    PARENT_AGENT_ENV.iter().map(|s| s.to_string()).collect()
+}
+
 // ---- shells ---------------------------------------------------------------
 
 #[cfg(unix)]

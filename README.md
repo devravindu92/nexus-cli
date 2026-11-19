@@ -35,6 +35,7 @@ This is the first slice of Phase 1 (local terminal workspace).
 - A "Locate folder…" action when a project folder has moved.
 - SQLite persistence of workspaces, sessions and layouts; the last workspace and layout come back after a restart.
 - Claude Code awareness from its own hooks, never from terminal text: Working, Waiting for input, Needs permission, Finished turn. After a restart a Claude Code session can continue its saved conversation in a new process. Other agents show "State unknown".
+- Resource use on the dashboard: memory, CPU and what is running in each terminal (with everything it started), a Close button for the ones you don't need, and NEXUS's own footprint.
 - Truthful session states: Running, Exited (with code), Recoverable, Restored. Local processes end when the app quits; NEXUS says so and offers to start a new process from the saved settings.
 - Recently closed sessions (searchable) with restore, dashboard, activity feed, command palette, git branch display.
 

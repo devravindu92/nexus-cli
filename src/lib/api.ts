@@ -82,6 +82,29 @@ export interface AppInfo {
   agentAdapterApi: number;
 }
 
+export interface TreeUsage {
+  memoryBytes: number;
+  /** Percent of one CPU core. */
+  cpuPercent: number;
+  processCount: number;
+}
+
+export interface SessionUsage extends TreeUsage {
+  sessionId: string;
+  pid: number;
+  /** Command line of the program in control of the terminal right now. */
+  foreground: string | null;
+  /** The session's own root program is in front (a shell at its prompt). */
+  atRoot: boolean;
+}
+
+export interface UsageSnapshot {
+  /** NEXUS itself, without the terminals' processes. */
+  app: TreeUsage;
+  appIncludesWebview: boolean;
+  sessions: SessionUsage[];
+}
+
 export interface NewSession {
   workspaceId: string;
   kind: SessionKind;
@@ -128,6 +151,8 @@ export const api = {
   ) => invoke<Session>("session_update", { id, ...patch }),
   sessionClose: (id: string) => invoke<void>("session_close", { id }),
   sessionForget: (id: string) => invoke<void>("session_forget", { id }),
+
+  usageSnapshot: () => invoke<UsageSnapshot>("usage_snapshot"),
 
   terminalSubscribe: (id: string, onOutput: (bytes: Uint8Array) => void) => {
     const channel = new Channel<unknown>();
